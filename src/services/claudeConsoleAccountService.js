@@ -65,13 +65,30 @@ class ClaudeConsoleAccountService {
     // 处理 supportedModels，确保向后兼容
     const processedModels = this._processModelMapping(supportedModels)
 
+    // 处理多个API Key - 按换行符分割并过滤空行
+    const apiKeys = apiKey
+      .split('\n')
+      .map((key) => key.trim())
+      .filter((key) => key.length > 0)
+
+    // 如果没有有效的key，抛出错误
+    if (apiKeys.length === 0) {
+      throw new Error('At least one valid API Key is required for Claude Console account')
+    }
+
+    // 加密所有key并用特殊分隔符连接
+    const encryptedKeys = apiKeys.map((key) => this._encryptSensitiveData(key))
+    const encryptedKeysString = encryptedKeys.join('|||')
+
     const accountData = {
       id: accountId,
       platform: 'claude-console',
       name,
       description,
       apiUrl,
-      apiKey: this._encryptSensitiveData(apiKey),
+      apiKey: encryptedKeysString,
+      apiKeyCount: apiKeys.length.toString(), // 记录key的数量
+      apiKeyIndex: '0', // 当前使用的key索引
       priority: priority.toString(),
       supportedModels: JSON.stringify(processedModels),
       userAgent,
@@ -147,12 +164,26 @@ class ClaudeConsoleAccountService {
           // 获取限流状态信息
           const rateLimitInfo = this._getRateLimitInfo(accountData)
 
+          // 处理多个API Key的显示（返回时将多个key合并，前端显示时换行）
+          let apiKeyDisplay = ''
+          if (accountData.apiKey && accountData.apiKey.includes('|||')) {
+            // 新格式：多个key，解密每个key并用换行符连接
+            const encryptedKeys = accountData.apiKey.split('|||')
+            const decryptedKeys = encryptedKeys.map((k) => this._decryptSensitiveData(k))
+            apiKeyDisplay = decryptedKeys.join('\n')
+          } else if (accountData.apiKey) {
+            // 旧格式：单个key
+            apiKeyDisplay = this._decryptSensitiveData(accountData.apiKey)
+          }
+
           accounts.push({
             id: accountData.id,
             platform: accountData.platform,
             name: accountData.name,
             description: accountData.description,
             apiUrl: accountData.apiUrl,
+            apiKey: apiKeyDisplay, // 返回明文keys，用换行符分隔（前端显示用）
+            apiKeyCount: parseInt(accountData.apiKeyCount || '1'), // API Key数量
             priority: parseInt(accountData.priority) || 50,
             supportedModels: JSON.parse(accountData.supportedModels || '[]'),
             userAgent: accountData.userAgent,
@@ -199,13 +230,27 @@ class ClaudeConsoleAccountService {
     logger.debug(`[DEBUG] Raw account data keys: ${Object.keys(accountData).join(', ')}`)
     logger.debug(`[DEBUG] Raw supportedModels value: ${accountData.supportedModels}`)
 
-    // 解密敏感字段（只解密apiKey，apiUrl不加密）
-    const decryptedKey = this._decryptSensitiveData(accountData.apiKey)
-    logger.debug(
-      `[DEBUG] URL exists: ${!!accountData.apiUrl}, Decrypted key exists: ${!!decryptedKey}`
-    )
+    // 解密敏感字段（处理多个API Key）
+    if (accountData.apiKey.includes('|||')) {
+      // 新格式：多个key
+      const encryptedKeys = accountData.apiKey.split('|||')
+      const decryptedKeys = encryptedKeys.map((key) => this._decryptSensitiveData(key))
+      accountData.apiKeys = decryptedKeys // 存储所有解密的keys
+      accountData.apiKey = decryptedKeys[0] // 保持向后兼容，默认使用第一个key
+      accountData.apiKeyCount = decryptedKeys.length
+      accountData.apiKeyIndex = parseInt(accountData.apiKeyIndex || '0') || 0
+    } else {
+      // 旧格式：单个key
+      const decryptedKey = this._decryptSensitiveData(accountData.apiKey)
+      accountData.apiKeys = [decryptedKey]
+      accountData.apiKey = decryptedKey
+      accountData.apiKeyCount = 1
+      accountData.apiKeyIndex = 0
+    }
 
-    accountData.apiKey = decryptedKey
+    logger.debug(
+      `[DEBUG] URL exists: ${!!accountData.apiUrl}, API Keys count: ${accountData.apiKeyCount}`
+    )
 
     // 解析JSON字段
     const parsedModels = JSON.parse(accountData.supportedModels || '[]')
@@ -225,10 +270,52 @@ class ClaudeConsoleAccountService {
     }
 
     logger.debug(
-      `[DEBUG] Final account data - name: ${accountData.name}, hasApiUrl: ${!!accountData.apiUrl}, hasApiKey: ${!!accountData.apiKey}, supportedModels: ${JSON.stringify(accountData.supportedModels)}`
+      `[DEBUG] Final account data - name: ${accountData.name}, hasApiUrl: ${!!accountData.apiUrl}, API Keys count: ${accountData.apiKeyCount}, supportedModels: ${JSON.stringify(accountData.supportedModels)}`
     )
 
     return accountData
+  }
+
+  // 🔑 获取下一个可用的API Key（轮询）
+  async getNextApiKey(accountId) {
+    const client = redis.getClientSafe()
+    const accountKey = `${this.ACCOUNT_KEY_PREFIX}${accountId}`
+
+    // 获取当前索引和key总数
+    const [apiKeyData, currentIndexStr, keyCountStr] = await client.hmget(
+      accountKey,
+      'apiKey',
+      'apiKeyIndex',
+      'apiKeyCount'
+    )
+
+    if (!apiKeyData) {
+      logger.error(`No API keys found for account ${accountId}`)
+      return null
+    }
+
+    // 处理多个key的情况
+    if (apiKeyData.includes('|||')) {
+      const encryptedKeys = apiKeyData.split('|||')
+      const keyCount = encryptedKeys.length
+      let currentIndex = parseInt(currentIndexStr || '0') || 0
+
+      // 获取当前key
+      const currentKey = this._decryptSensitiveData(encryptedKeys[currentIndex])
+
+      // 更新索引到下一个key（轮询）
+      const nextIndex = (currentIndex + 1) % keyCount
+      await client.hset(accountKey, 'apiKeyIndex', nextIndex.toString())
+
+      logger.debug(
+        `[Claude Console] Account ${accountId} using API key ${currentIndex + 1}/${keyCount}`
+      )
+
+      return currentKey
+    } else {
+      // 单个key的情况
+      return this._decryptSensitiveData(apiKeyData)
+    }
   }
 
   // 📝 更新账户
@@ -258,9 +345,23 @@ class ClaudeConsoleAccountService {
         logger.debug(`[DEBUG] Updating apiUrl from frontend: ${updates.apiUrl}`)
         updatedData.apiUrl = updates.apiUrl
       }
-      if (updates.apiKey !== undefined) {
+      if (updates.apiKey !== undefined && updates.apiKey !== '') {
         logger.debug(`[DEBUG] Updating apiKey (length: ${updates.apiKey?.length})`)
-        updatedData.apiKey = this._encryptSensitiveData(updates.apiKey)
+
+        // 处理多个API Key - 按换行符分割并过滤空行
+        const apiKeys = updates.apiKey
+          .split('\n')
+          .map((key) => key.trim())
+          .filter((key) => key.length > 0)
+
+        if (apiKeys.length > 0) {
+          // 加密所有key并用特殊分隔符连接
+          const encryptedKeys = apiKeys.map((key) => this._encryptSensitiveData(key))
+          updatedData.apiKey = encryptedKeys.join('|||')
+          updatedData.apiKeyCount = apiKeys.length.toString()
+          updatedData.apiKeyIndex = '0' // 重置索引
+          logger.debug(`[DEBUG] Updated ${apiKeys.length} API keys for account ${accountId}`)
+        }
       }
       if (updates.priority !== undefined) {
         updatedData.priority = updates.priority.toString()

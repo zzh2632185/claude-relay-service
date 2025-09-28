@@ -128,14 +128,20 @@ class ClaudeConsoleRelayService {
         validateStatus: () => true // 接受所有状态码
       }
 
+      // 获取轮询的API Key
+      const apiKey = await claudeConsoleAccountService.getNextApiKey(accountId)
+      if (!apiKey) {
+        throw new Error('No valid API key available for Claude Console account')
+      }
+
       // 根据 API Key 格式选择认证方式
-      if (account.apiKey && account.apiKey.startsWith('sk-ant-')) {
+      if (apiKey && apiKey.startsWith('sk-ant-')) {
         // Anthropic 官方 API Key 使用 x-api-key
-        requestConfig.headers['x-api-key'] = account.apiKey
+        requestConfig.headers['x-api-key'] = apiKey
         logger.debug('[DEBUG] Using x-api-key authentication for sk-ant-* API key')
       } else {
         // 其他 API Key 使用 Authorization Bearer
-        requestConfig.headers['Authorization'] = `Bearer ${account.apiKey}`
+        requestConfig.headers['Authorization'] = `Bearer ${apiKey}`
         logger.debug('[DEBUG] Using Authorization Bearer authentication')
       }
 
@@ -322,7 +328,7 @@ class ClaudeConsoleRelayService {
     streamTransformer = null,
     requestOptions = {}
   ) {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       let aborted = false
 
       // 构建完整的API URL
@@ -359,14 +365,21 @@ class ClaudeConsoleRelayService {
         validateStatus: () => true // 接受所有状态码
       }
 
+      // 获取轮询的API Key
+      const apiKey = await claudeConsoleAccountService.getNextApiKey(accountId)
+      if (!apiKey) {
+        reject(new Error('No valid API key available for Claude Console account'))
+        return
+      }
+
       // 根据 API Key 格式选择认证方式
-      if (account.apiKey && account.apiKey.startsWith('sk-ant-')) {
+      if (apiKey && apiKey.startsWith('sk-ant-')) {
         // Anthropic 官方 API Key 使用 x-api-key
-        requestConfig.headers['x-api-key'] = account.apiKey
+        requestConfig.headers['x-api-key'] = apiKey
         logger.debug('[DEBUG] Using x-api-key authentication for sk-ant-* API key')
       } else {
         // 其他 API Key 使用 Authorization Bearer
-        requestConfig.headers['Authorization'] = `Bearer ${account.apiKey}`
+        requestConfig.headers['Authorization'] = `Bearer ${apiKey}`
         logger.debug('[DEBUG] Using Authorization Bearer authentication')
       }
 

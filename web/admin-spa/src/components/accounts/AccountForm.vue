@@ -976,16 +976,20 @@
                 <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
                   >API Key *</label
                 >
-                <input
+                <textarea
                   v-model="form.apiKey"
-                  class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
+                  class="form-input w-full resize-none border-gray-300 font-mono text-xs dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400"
                   :class="{ 'border-red-500': errors.apiKey }"
-                  placeholder="请输入API Key"
+                  placeholder="请输入API Key，每行一个key（支持多个key轮询使用）"
                   required
-                  type="password"
+                  rows="4"
                 />
                 <p v-if="errors.apiKey" class="mt-1 text-xs text-red-500">
                   {{ errors.apiKey }}
+                </p>
+                <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                  <i class="fas fa-info-circle mr-1" />
+                  可以输入多个API Key，每行一个。系统会自动在多个key之间轮询使用。
                 </p>
               </div>
 
@@ -2103,13 +2107,17 @@
 
             <div>
               <label class="mb-3 block text-sm font-semibold text-gray-700">API Key</label>
-              <input
+              <textarea
                 v-model="form.apiKey"
-                class="form-input w-full"
-                placeholder="留空表示不更新"
-                type="password"
+                class="form-input w-full resize-none font-mono text-xs"
+                placeholder="留空表示不更新，每行一个key（支持多个key轮询使用）"
+                rows="4"
               />
               <p class="mt-1 text-xs text-gray-500">留空表示不更新 API Key</p>
+              <p class="mt-1 text-xs text-gray-500">
+                <i class="fas fa-info-circle mr-1" />
+                可以输入多个API Key，每行一个。系统会自动在多个key之间轮询使用。
+              </p>
             </div>
 
             <!-- 额度管理字段 -->
