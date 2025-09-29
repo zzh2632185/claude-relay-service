@@ -15,11 +15,12 @@ class AccountGroupService {
    * @param {string} groupData.name - 分组名称
    * @param {string} groupData.platform - 平台类型 (claude/gemini/openai)
    * @param {string} groupData.description - 分组描述
+   * @param {string} groupData.schedulingStrategy - 调度策略 (lru/round-robin) 默认lru
    * @returns {Object} 创建的分组
    */
   async createGroup(groupData) {
     try {
-      const { name, platform, description = '' } = groupData
+      const { name, platform, description = '', schedulingStrategy = 'lru' } = groupData
 
       // 验证必填字段
       if (!name || !platform) {
@@ -31,6 +32,11 @@ class AccountGroupService {
         throw new Error('平台类型必须是 claude、gemini 或 openai')
       }
 
+      // 验证调度策略
+      if (!['lru', 'round-robin'].includes(schedulingStrategy)) {
+        throw new Error('调度策略必须是 lru 或 round-robin')
+      }
+
       const client = redis.getClientSafe()
       const groupId = uuidv4()
       const now = new Date().toISOString()
@@ -40,6 +46,8 @@ class AccountGroupService {
         name,
         platform,
         description,
+        schedulingStrategy,
+        roundRobinIndex: 0,  // 轮询索引，用于round-robin策略
         createdAt: now,
         updatedAt: now
       }
@@ -84,10 +92,20 @@ class AccountGroupService {
         throw new Error('不能修改分组的平台类型')
       }
 
+      // 验证调度策略（如果有更新）
+      if (updates.schedulingStrategy && !['lru', 'round-robin'].includes(updates.schedulingStrategy)) {
+        throw new Error('调度策略必须是 lru 或 round-robin')
+      }
+
       // 准备更新数据
       const updateData = {
         ...updates,
         updatedAt: new Date().toISOString()
+      }
+
+      // 如果切换到round-robin策略，重置索引
+      if (updates.schedulingStrategy === 'round-robin' && existingGroup.schedulingStrategy !== 'round-robin') {
+        updateData.roundRobinIndex = 0
       }
 
       // 移除不允许修改的字段
@@ -100,6 +118,10 @@ class AccountGroupService {
 
       // 返回更新后的完整数据
       const updatedGroup = await client.hgetall(groupKey)
+      // 确保roundRobinIndex是数字类型
+      if (updatedGroup.roundRobinIndex !== undefined) {
+        updatedGroup.roundRobinIndex = parseInt(updatedGroup.roundRobinIndex) || 0
+      }
 
       logger.success(`✅ 更新账户分组成功: ${updatedGroup.name}`)
 
@@ -166,6 +188,11 @@ class AccountGroupService {
 
       // 获取成员数量
       const memberCount = await client.scard(`${this.GROUP_MEMBERS_PREFIX}${groupId}`)
+
+      // 确保roundRobinIndex是数字类型
+      if (groupData.roundRobinIndex !== undefined) {
+        groupData.roundRobinIndex = parseInt(groupData.roundRobinIndex) || 0
+      }
 
       return {
         ...groupData,
@@ -401,6 +428,25 @@ class AccountGroupService {
       logger.success(`✅ 批量设置账户分组成功: ${accountId} -> [${groupIds.join(', ')}]`)
     } catch (error) {
       logger.error('❌ 批量设置账户分组失败:', error)
+      throw error
+    }
+  }
+
+  /**
+   * 更新分组的轮询索引（用于round-robin策略）
+   * @param {string} groupId - 分组ID
+   * @param {number} newIndex - 新的索引值
+   */
+  async updateRoundRobinIndex(groupId, newIndex) {
+    try {
+      const client = redis.getClientSafe()
+      const groupKey = `${this.GROUP_PREFIX}${groupId}`
+
+      await client.hset(groupKey, 'roundRobinIndex', newIndex.toString())
+
+      logger.debug(`更新分组 ${groupId} 的轮询索引为: ${newIndex}`)
+    } catch (error) {
+      logger.error('❌ 更新轮询索引失败:', error)
       throw error
     }
   }

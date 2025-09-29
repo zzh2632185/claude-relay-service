@@ -71,6 +71,24 @@
               />
             </div>
 
+            <div>
+              <label class="mb-2 block text-sm font-semibold text-gray-700">
+                调度策略
+                <span class="ml-1 text-xs font-normal text-gray-500">(可选)</span>
+              </label>
+              <select v-model="createForm.schedulingStrategy" class="form-input w-full">
+                <option value="lru">LRU (最久未使用优先)</option>
+                <option value="round-robin">轮询 (Round-Robin)</option>
+              </select>
+              <p class="mt-1 text-xs text-gray-500">
+                LRU: 在最高优先级组内，优先选择最久未使用的账户，支持会话粘性
+                <br />
+                轮询: 在最高优先级组内按固定顺序循环选择，不支持会话粘性
+                <br />
+                <span class="text-amber-600">注意：只有同一优先级的账户才会参与轮询或LRU选择</span>
+              </p>
+            </div>
+
             <div class="flex gap-3">
               <button
                 class="btn btn-primary px-4 py-2"
@@ -130,6 +148,15 @@
                           ? 'Gemini'
                           : 'OpenAI'
                     }}
+                  </span>
+                </div>
+              </div>
+
+              <div class="mt-2 flex items-center justify-between text-sm">
+                <div class="flex items-center gap-1 text-gray-600">
+                  <i class="fas fa-sync-alt mr-1" />
+                  <span class="text-xs">
+                    {{ group.schedulingStrategy === 'round-robin' ? '轮询调度' : 'LRU调度' }}
                   </span>
                 </div>
               </div>
@@ -217,6 +244,24 @@
             />
           </div>
 
+          <div>
+            <label class="mb-2 block text-sm font-semibold text-gray-700">
+              调度策略
+              <span class="ml-1 text-xs font-normal text-gray-500">(可选)</span>
+            </label>
+            <select v-model="editForm.schedulingStrategy" class="form-input w-full">
+              <option value="lru">LRU (最久未使用优先)</option>
+              <option value="round-robin">轮询 (Round-Robin)</option>
+            </select>
+            <p class="mt-1 text-xs text-gray-500">
+              LRU: 在最高优先级组内，优先选择最久未使用的账户，支持会话粘性
+              <br />
+              轮询: 在最高优先级组内按固定顺序循环选择，不支持会话粘性
+              <br />
+              <span class="text-amber-600">注意：只有同一优先级的账户才会参与轮询或LRU选择</span>
+            </p>
+          </div>
+
           <div class="flex gap-3 pt-4">
             <button
               class="btn btn-primary flex-1 px-4 py-2"
@@ -251,7 +296,8 @@ const creating = ref(false)
 const createForm = ref({
   name: '',
   platform: 'claude',
-  description: ''
+  description: '',
+  schedulingStrategy: 'lru'
 })
 
 // 编辑表单
@@ -261,7 +307,8 @@ const editingGroup = ref(null)
 const editForm = ref({
   name: '',
   platform: '',
-  description: ''
+  description: '',
+  schedulingStrategy: 'lru'
 })
 
 // 格式化日期
@@ -296,7 +343,8 @@ const createGroup = async () => {
     await apiClient.post('/admin/account-groups', {
       name: createForm.value.name,
       platform: createForm.value.platform,
-      description: createForm.value.description
+      description: createForm.value.description,
+      schedulingStrategy: createForm.value.schedulingStrategy
     })
 
     showToast('分组创建成功', 'success')
@@ -316,7 +364,8 @@ const cancelCreate = () => {
   createForm.value = {
     name: '',
     platform: 'claude',
-    description: ''
+    description: '',
+    schedulingStrategy: 'lru'
   }
 }
 
@@ -326,7 +375,8 @@ const editGroup = (group) => {
   editForm.value = {
     name: group.name,
     platform: group.platform,
-    description: group.description || ''
+    description: group.description || '',
+    schedulingStrategy: group.schedulingStrategy || 'lru'
   }
   showEditForm.value = true
 }
@@ -342,7 +392,8 @@ const updateGroup = async () => {
   try {
     await apiClient.put(`/admin/account-groups/${editingGroup.value.id}`, {
       name: editForm.value.name,
-      description: editForm.value.description
+      description: editForm.value.description,
+      schedulingStrategy: editForm.value.schedulingStrategy
     })
 
     showToast('分组更新成功', 'success')
@@ -363,7 +414,8 @@ const cancelEdit = () => {
   editForm.value = {
     name: '',
     platform: '',
-    description: ''
+    description: '',
+    schedulingStrategy: 'lru'
   }
 }
 

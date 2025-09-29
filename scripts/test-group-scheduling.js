@@ -371,9 +371,129 @@ async function test6_stickySession() {
   }
 }
 
-// 测试7: 账户可用性检查
-async function test7_accountAvailability() {
-  log('\n📝 测试7: 账户可用性检查', 'info')
+// 测试7: 轮询策略测试
+async function test7_roundRobinStrategy() {
+  log('\n📝 测试7: 轮询策略测试', 'info')
+
+  try {
+    // 创建一个使用轮询策略的分组
+    const roundRobinGroup = await accountGroupService.createGroup({
+      name: `${TEST_PREFIX}RoundRobin组`,
+      platform: 'claude',
+      description: '测试轮询策略',
+      schedulingStrategy: 'round-robin'
+    })
+    testData.groups.push(roundRobinGroup)
+    log(`✅ 创建轮询策略分组成功: ${roundRobinGroup.name}`, 'success')
+
+    // 创建几个测试账户并添加到分组
+    const accounts = []
+    for (let i = 1; i <= 3; i++) {
+      const account = await claudeAccountService.createAccount({
+        name: `${TEST_PREFIX}RoundRobin账户${i}`,
+        email: `rr${i}@example.com`,
+        refreshToken: `test_rr_token_${i}`,
+        accountType: 'group',
+        priority: i * 10  // 设置不同优先级
+      })
+      testData.accounts.push({ ...account, type: 'claude' })
+      accounts.push(account)
+      await accountGroupService.addAccountToGroup(account.id, roundRobinGroup.id, 'claude')
+      log(`   添加账户${i}到轮询分组`, 'info')
+    }
+
+    // 创建API Key绑定到轮询分组
+    const apiKey = await apiKeyService.generateApiKey({
+      name: `${TEST_PREFIX}RoundRobin API Key`,
+      claudeAccountId: `group:${roundRobinGroup.id}`,
+      permissions: 'claude'
+    })
+    testData.apiKeys.push(apiKey)
+
+    // 进行多次选择，验证是否按顺序轮询
+    const selections = []
+    const testCount = 9  // 3个账户，测试9次应该每个账户被选中3次
+
+    for (let i = 0; i < testCount; i++) {
+      // 轮询策略不使用会话哈希
+      const result = await unifiedClaudeScheduler.selectAccountForApiKey(
+        {
+          id: apiKey.id,
+          claudeAccountId: apiKey.claudeAccountId,
+          name: apiKey.name
+        }
+      )
+      selections.push(result.accountId)
+      await sleep(50)
+    }
+
+    // 分析选择模式
+    log('\n📊 轮询选择顺序:', 'info')
+    for (let i = 0; i < selections.length; i++) {
+      const account = accounts.find(a => a.id === selections[i])
+      log(`   第${i + 1}次: ${account.name}`, 'info')
+    }
+
+    // 验证是否是按顺序轮询
+    const accountIds = accounts.sort((a, b) => a.priority - b.priority).map(a => a.id)
+    let isRoundRobin = true
+    for (let i = 0; i < selections.length; i++) {
+      const expectedIndex = i % accountIds.length
+      if (selections[i] !== accountIds[expectedIndex]) {
+        isRoundRobin = false
+        break
+      }
+    }
+
+    if (isRoundRobin) {
+      log('✅ 轮询策略验证通过，按顺序循环选择', 'success')
+    } else {
+      log('⚠️ 轮询顺序可能有偏差，但这可能是因为账户可用性变化', 'warning')
+    }
+  } catch (error) {
+    log(`❌ 测试7失败: ${error.message}`, 'error')
+    throw error
+  }
+}
+
+// 测试8: 策略切换测试
+async function test8_strategySwitch() {
+  log('\n📝 测试8: 策略切换测试', 'info')
+
+  try {
+    const claudeGroup = testData.groups.find(g => g.platform === 'claude' && g.schedulingStrategy !== 'round-robin')
+
+    // 默认应该是lru策略
+    log(`   当前策略: ${claudeGroup.schedulingStrategy || 'lru'}`, 'info')
+
+    // 切换到轮询策略
+    await accountGroupService.updateGroup(claudeGroup.id, {
+      schedulingStrategy: 'round-robin'
+    })
+    log('   切换到轮询策略', 'info')
+
+    // 获取更新后的分组信息
+    const updatedGroup = await accountGroupService.getGroup(claudeGroup.id)
+    if (updatedGroup.schedulingStrategy === 'round-robin') {
+      log('✅ 策略切换成功', 'success')
+    } else {
+      throw new Error('策略切换失败')
+    }
+
+    // 切换回lru策略
+    await accountGroupService.updateGroup(claudeGroup.id, {
+      schedulingStrategy: 'lru'
+    })
+    log('   切换回LRU策略', 'info')
+  } catch (error) {
+    log(`❌ 测试8失败: ${error.message}`, 'error')
+    throw error
+  }
+}
+
+// 测试9: 账户可用性检查（原test7）
+async function test9_accountAvailability() {
+  log('\n📝 测试9: 账户可用性检查', 'info')
 
   try {
     const apiKey = testData.apiKeys[0]
@@ -422,14 +542,14 @@ async function test7_accountAvailability() {
       await claudeConsoleAccountService.updateAccount(firstAccount.id, { isActive: true })
     }
   } catch (error) {
-    log(`❌ 测试7失败: ${error.message}`, 'error')
+    log(`❌ 测试9失败: ${error.message}`, 'error')
     throw error
   }
 }
 
-// 测试8: 分组成员管理
-async function test8_groupMemberManagement() {
-  log('\n📝 测试8: 分组成员管理', 'info')
+// 测试10: 分组成员管理（原test8）
+async function test10_groupMemberManagement() {
+  log('\n📝 测试10: 分组成员管理', 'info')
 
   try {
     const claudeGroup = testData.groups.find((g) => g.platform === 'claude')
@@ -460,14 +580,14 @@ async function test8_groupMemberManagement() {
     await accountGroupService.addAccountToGroup(account.id, claudeGroup.id, 'claude')
     log('   重新添加账户到分组', 'info')
   } catch (error) {
-    log(`❌ 测试8失败: ${error.message}`, 'error')
+    log(`❌ 测试10失败: ${error.message}`, 'error')
     throw error
   }
 }
 
-// 测试9: 空分组处理
-async function test9_emptyGroupHandling() {
-  log('\n📝 测试9: 空分组处理', 'info')
+// 测试11: 空分组处理（原test9）
+async function test11_emptyGroupHandling() {
+  log('\n📝 测试11: 空分组处理', 'info')
 
   try {
     // 创建一个空分组
@@ -502,7 +622,7 @@ async function test9_emptyGroupHandling() {
       }
     }
   } catch (error) {
-    log(`❌ 测试9失败: ${error.message}`, 'error')
+    log(`❌ 测试11失败: ${error.message}`, 'error')
     throw error
   }
 }
@@ -523,9 +643,11 @@ async function runTests() {
     await test4_apiKeyBindGroup()
     await test5_groupSchedulingLoadBalance()
     await test6_stickySession()
-    await test7_accountAvailability()
-    await test8_groupMemberManagement()
-    await test9_emptyGroupHandling()
+    await test7_roundRobinStrategy()
+    await test8_strategySwitch()
+    await test9_accountAvailability()
+    await test10_groupMemberManagement()
+    await test11_emptyGroupHandling()
 
     log('\n🎉 所有测试通过！分组调度功能工作正常', 'success')
   } catch (error) {

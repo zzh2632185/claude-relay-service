@@ -1016,10 +1016,10 @@ class UnifiedClaudeScheduler {
         throw new Error(`Group ${groupId} not found`)
       }
 
-      logger.info(`👥 Selecting account from group: ${group.name} (${group.platform})`)
+      logger.info(`👥 Selecting account from group: ${group.name} (${group.platform}) using ${group.schedulingStrategy || 'lru'} strategy`)
 
-      // 如果有会话哈希，检查是否有已映射的账户
-      if (sessionHash) {
+      // 轮询策略不使用会话粘性
+      if (group.schedulingStrategy !== 'round-robin' && sessionHash) {
         const mappedAccount = await this._getSessionMapping(sessionHash)
         if (mappedAccount) {
           // 验证映射的账户是否属于这个分组
@@ -1131,22 +1131,64 @@ class UnifiedClaudeScheduler {
         throw new Error(`No available accounts in group ${group.name}`)
       }
 
-      // 使用现有的优先级排序逻辑
-      const sortedAccounts = this._sortAccountsByPriority(availableAccounts)
+      let selectedAccount
 
-      // 选择第一个账户
-      const selectedAccount = sortedAccounts[0]
+      // 先按优先级分组
+      const accountsByPriority = {}
+      availableAccounts.forEach(account => {
+        const priority = account.priority
+        if (!accountsByPriority[priority]) {
+          accountsByPriority[priority] = []
+        }
+        accountsByPriority[priority].push(account)
+      })
 
-      // 如果有会话哈希，建立新的映射
-      if (sessionHash) {
-        await this._setSessionMapping(
-          sessionHash,
-          selectedAccount.accountId,
-          selectedAccount.accountType
-        )
+      // 获取最高优先级（数字越小优先级越高）
+      const priorities = Object.keys(accountsByPriority).map(p => parseInt(p)).sort((a, b) => a - b)
+      const highestPriority = priorities[0]
+      const highestPriorityAccounts = accountsByPriority[highestPriority]
+
+      // 根据调度策略在最高优先级组内选择账户
+      if (group.schedulingStrategy === 'round-robin') {
+        // 轮询策略：只在同一优先级内轮询
+        // 按name排序，确保同优先级账户顺序稳定
+        highestPriorityAccounts.sort((a, b) => a.name.localeCompare(b.name))
+
+        // 为每个优先级维护独立的索引（使用 "priority_" 前缀）
+        const indexKey = `roundRobinIndex_${highestPriority}`
+        const currentIndex = group[indexKey] || 0
+        const nextIndex = currentIndex % highestPriorityAccounts.length
+        selectedAccount = highestPriorityAccounts[nextIndex]
+
+        // 更新该优先级组的索引
+        const updateData = {}
+        updateData[indexKey] = (nextIndex + 1) % highestPriorityAccounts.length
+        const client = redis.getClientSafe()
+        await client.hmset(`account_group:${groupId}`, updateData)
+
         logger.info(
-          `🎯 Created new sticky session mapping in group: ${selectedAccount.name} (${selectedAccount.accountId}, ${selectedAccount.accountType}) for session ${sessionHash}`
+          `🔄 Round-robin selection in priority ${highestPriority}: ${selectedAccount.name} (index: ${nextIndex}/${highestPriorityAccounts.length})`
         )
+      } else {
+        // 默认LRU策略：在最高优先级组内按最后使用时间排序
+        highestPriorityAccounts.sort((a, b) => {
+          const aLastUsed = new Date(a.lastUsedAt || 0).getTime()
+          const bLastUsed = new Date(b.lastUsedAt || 0).getTime()
+          return aLastUsed - bLastUsed
+        })
+        selectedAccount = highestPriorityAccounts[0]
+
+        // LRU策略支持会话粘性
+        if (sessionHash) {
+          await this._setSessionMapping(
+            sessionHash,
+            selectedAccount.accountId,
+            selectedAccount.accountType
+          )
+          logger.info(
+            `🎯 Created new sticky session mapping in group: ${selectedAccount.name} (${selectedAccount.accountId}, ${selectedAccount.accountType}) for session ${sessionHash}`
+          )
+        }
       }
 
       logger.info(
