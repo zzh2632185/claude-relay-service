@@ -47,7 +47,7 @@ class AccountGroupService {
         platform,
         description,
         schedulingStrategy,
-        roundRobinIndex: 0,  // 轮询索引，用于round-robin策略
+        roundRobinIndex: 0, // 轮询索引，用于round-robin策略
         createdAt: now,
         updatedAt: now
       }
@@ -93,7 +93,10 @@ class AccountGroupService {
       }
 
       // 验证调度策略（如果有更新）
-      if (updates.schedulingStrategy && !['lru', 'round-robin'].includes(updates.schedulingStrategy)) {
+      if (
+        updates.schedulingStrategy &&
+        !['lru', 'round-robin'].includes(updates.schedulingStrategy)
+      ) {
         throw new Error('调度策略必须是 lru 或 round-robin')
       }
 
@@ -104,7 +107,10 @@ class AccountGroupService {
       }
 
       // 如果切换到round-robin策略，重置索引
-      if (updates.schedulingStrategy === 'round-robin' && existingGroup.schedulingStrategy !== 'round-robin') {
+      if (
+        updates.schedulingStrategy === 'round-robin' &&
+        existingGroup.schedulingStrategy !== 'round-robin'
+      ) {
         updateData.roundRobinIndex = 0
       }
 
@@ -251,9 +257,13 @@ class AccountGroupService {
         throw new Error('分组不存在')
       }
 
-      // 验证平台一致性 (Claude和Claude Console视为同一平台)
+      // 验证平台一致性 (Claude和Claude Console视为同一平台, OpenAI和OpenAI-Responses视为同一平台)
       const normalizedAccountPlatform =
-        accountPlatform === 'claude-console' ? 'claude' : accountPlatform
+        accountPlatform === 'claude-console'
+          ? 'claude'
+          : accountPlatform === 'openai-responses'
+            ? 'openai'
+            : accountPlatform
       if (normalizedAccountPlatform !== group.platform) {
         throw new Error('账户平台与分组平台不匹配')
       }
