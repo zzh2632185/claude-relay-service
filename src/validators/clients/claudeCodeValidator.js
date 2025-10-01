@@ -1,12 +1,6 @@
 const logger = require('../../utils/logger')
 const { CLIENT_DEFINITIONS } = require('../clientDefinitions')
-const {
-  haikuSystemPrompt,
-  claudeOtherSystemPrompt1,
-  claudeOtherSystemPrompt2,
-  claudeOtherSystemPromptCompact
-} = require('../../utils/contents')
-const { simple: similaritySimple } = require('../../utils/text-similarity')
+const { bestSimilarityByTemplates, SYSTEM_PROMPT_THRESHOLD } = require('../../utils/contents')
 
 /**
  * Claude Code CLI 验证器
@@ -56,35 +50,17 @@ class ClaudeCodeValidator {
       return false
     }
 
-    if (model.startsWith('claude-3-5-haiku')) {
-      return true
-    }
-
     const systemEntries = Array.isArray(body.system) ? body.system : []
-    const system0Text =
-      systemEntries.length > 0 && typeof systemEntries[0]?.text === 'string'
-        ? systemEntries[0].text
-        : null
-    const system1Text =
-      systemEntries.length > 1 && typeof systemEntries[1]?.text === 'string'
-        ? systemEntries[1].text
-        : null
-
-    if (!system0Text || !system1Text) {
-      return false
+    for (const entry of systemEntries) {
+      const rawText = typeof entry?.text === 'string' ? entry.text : ''
+      const { bestScore } = bestSimilarityByTemplates(rawText)
+      if (bestScore < SYSTEM_PROMPT_THRESHOLD) {
+        logger.error(
+          `Claude system prompt similarity below threshold: score=${bestScore.toFixed(4)}, threshold=${SYSTEM_PROMPT_THRESHOLD}, prompt=${rawText}`
+        )
+        return false
+      }
     }
-
-    const sys0 = similaritySimple(system0Text, claudeOtherSystemPrompt1, 0.9)
-    if (!sys0.passed) {
-      return false
-    }
-
-    const sys1 = similaritySimple(system1Text, claudeOtherSystemPrompt2, 0.5)
-    const sysCompact = similaritySimple(system1Text, claudeOtherSystemPromptCompact, 0.9)
-    if (!sys1.passed && !sysCompact.passed) {
-      return false
-    }
-
     return true
   }
 
@@ -99,9 +75,15 @@ class ClaudeCodeValidator {
       const path = req.path || ''
 
       // 1. 先检查是否是 Claude Code 的 User-Agent
-      // 格式: claude-cli/1.0.86 (external, cli) sdk-cli sdk-py
+      // 支持的格式:
+      // - claude-cli/1.0.86 (external, cli) - 原有 CLI 格式
+      // - claude-cli/2.0.0 (external, claude-vscode) - VSCode 插件格式
+      // - claude-cli/x.x.x (external, sdk-py) - Python SDK 格式
+      // - claude-cli/x.x.x (external, sdk-js) - JavaScript SDK 格式
+      // - 其他 (external, claude-xxx) 或 (external, sdk-xxx) 格式
 
-      const claudeCodePattern = /^claude-cli\/[\d.]+(?:[-\w]*)?\s+\(external,\s*(?:cli|sdk-[a-z]+)\)$/i
+      const claudeCodePattern =
+        /^claude-cli\/[\d.]+(?:[-\w]*)?\s+\(external,\s*(?:cli|claude-[\w-]+|sdk-[\w-]+)\)$/i
 
       if (!claudeCodePattern.test(userAgent)) {
         // 不是 Claude Code 的请求，此验证器不处理
