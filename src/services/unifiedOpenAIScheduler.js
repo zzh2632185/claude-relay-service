@@ -815,32 +815,66 @@ class UnifiedOpenAIScheduler {
       // 获取可用的分组成员账户
       const availableAccounts = []
       for (const memberId of memberIds) {
-        const account = await openaiAccountService.getAccount(memberId)
+        // 尝试从 OpenAI 账户服务获取
+        let account = await openaiAccountService.getAccount(memberId)
+        let accountType = 'openai'
+
+        // 如果没有找到，尝试从 OpenAI-Responses 账户服务获取
+        if (!account) {
+          account = await openaiResponsesAccountService.getAccount(memberId)
+          accountType = 'openai-responses'
+        }
+
+        // 如果账户存在且状态正常
         if (account && account.isActive && account.status !== 'error') {
-          const readiness = await this._ensureAccountReadyForScheduling(account, account.id, {
-            sanitized: false
-          })
+          // OpenAI账户需要检查调度准备状态
+          if (accountType === 'openai') {
+            const readiness = await this._ensureAccountReadyForScheduling(account, account.id, {
+              sanitized: false
+            })
 
-          if (!readiness.canUse) {
-            if (readiness.reason === 'rate_limited') {
-              logger.debug(
-                `⏭️ Skipping group member OpenAI account ${account.name} - still rate limited`
-              )
-            } else {
-              logger.debug(
-                `⏭️ Skipping group member OpenAI account ${account.name} - not schedulable`
-              )
+            if (!readiness.canUse) {
+              if (readiness.reason === 'rate_limited') {
+                logger.debug(
+                  `⏭️ Skipping group member OpenAI account ${account.name} - still rate limited`
+                )
+              } else {
+                logger.debug(
+                  `⏭️ Skipping group member OpenAI account ${account.name} - not schedulable`
+                )
+              }
+              continue
             }
-            continue
-          }
 
-          // 检查token是否过期
-          const isExpired = openaiAccountService.isTokenExpired(account)
-          if (isExpired && !account.refreshToken) {
-            logger.warn(
-              `⚠️ Group member OpenAI account ${account.name} token expired and no refresh token available`
-            )
-            continue
+            // 检查token是否过期
+            const isExpired = openaiAccountService.isTokenExpired(account)
+            if (isExpired && !account.refreshToken) {
+              logger.warn(
+                `⚠️ Group member OpenAI account ${account.name} token expired and no refresh token available`
+              )
+              continue
+            }
+          } else {
+            // OpenAI-Responses账户的可调度性检查
+            const isSchedulable = account.schedulable === true || account.schedulable === 'true'
+            if (!isSchedulable) {
+              logger.debug(
+                `⏭️ Skipping group member OpenAI-Responses account ${account.name} - not schedulable`
+              )
+              continue
+            }
+
+            // 检查限流状态
+            const isRateLimited =
+              account.rateLimitStatus === 'limited' ||
+              (typeof account.rateLimitStatus === 'object' &&
+                account.rateLimitStatus.isRateLimited === true)
+            if (isRateLimited) {
+              logger.debug(
+                `⏭️ Skipping group member OpenAI-Responses account ${account.name} - rate limited`
+              )
+              continue
+            }
           }
 
           // 检查模型支持（仅在明确设置了supportedModels且不为空时才检查）
@@ -849,17 +883,17 @@ class UnifiedOpenAIScheduler {
             const modelSupported = account.supportedModels.includes(requestedModel)
             if (!modelSupported) {
               logger.debug(
-                `⏭️ Skipping group member OpenAI account ${account.name} - doesn't support model ${requestedModel}`
+                `⏭️ Skipping group member ${accountType} account ${account.name} - doesn't support model ${requestedModel}`
               )
               continue
             }
           }
 
-          // 检查是否被限流
+          // 添加到可用账户列表
           availableAccounts.push({
             ...account,
             accountId: account.id,
-            accountType: 'openai',
+            accountType: accountType,
             priority: parseInt(account.priority) || 50,
             lastUsedAt: account.lastUsedAt || '0'
           })

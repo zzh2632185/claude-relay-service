@@ -7976,9 +7976,13 @@ router.get('/openai-responses-accounts', authenticateAdmin, async (req, res) => 
             logger.info(`OpenAI-Responses account ${account.id} has ${boundCount} bound API keys`)
           }
 
+          // 获取账户的分组信息
+          const groupInfos = await accountGroupService.getAccountGroups(account.id)
+
           return {
             ...account,
             boundApiKeysCount: boundCount,
+            groupInfos,
             usage: {
               daily: usageStats.daily,
               total: usageStats.total,
@@ -7990,6 +7994,7 @@ router.get('/openai-responses-accounts', authenticateAdmin, async (req, res) => 
           return {
             ...account,
             boundApiKeysCount: 0,
+            groupInfos: [],
             usage: {
               daily: { requests: 0, tokens: 0, allTokens: 0 },
               total: { requests: 0, tokens: 0, allTokens: 0 },
