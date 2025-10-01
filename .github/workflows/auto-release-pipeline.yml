@@ -403,7 +403,7 @@ jobs:
       uses: docker/build-push-action@v6
       with:
         context: .
-        platforms: linux/arm64
+        platforms: linux/amd64
         push: true
         tags: |
           ${{ steps.image_names.outputs.ghcr_image }}:${{ steps.next_version.outputs.new_tag }}
