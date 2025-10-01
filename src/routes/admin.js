@@ -8010,7 +8010,37 @@ router.get('/openai-responses-accounts', authenticateAdmin, async (req, res) => 
 // 创建 OpenAI-Responses 账户
 router.post('/openai-responses-accounts', authenticateAdmin, async (req, res) => {
   try {
+    const { accountType, groupId, groupIds } = req.body
+
+    // 验证accountType的有效性
+    if (accountType && !['shared', 'dedicated', 'group'].includes(accountType)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid account type. Must be "shared", "dedicated" or "group"'
+      })
+    }
+
+    // 如果是分组类型，验证groupId或groupIds
+    if (accountType === 'group' && !groupId && (!groupIds || groupIds.length === 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Group ID or Group IDs are required for group type accounts'
+      })
+    }
+
     const account = await openaiResponsesAccountService.createAccount(req.body)
+
+    // 如果是分组类型，将账户添加到分组
+    if (accountType === 'group') {
+      if (groupIds && groupIds.length > 0) {
+        // 使用多分组设置
+        await accountGroupService.setAccountGroups(account.id, groupIds, 'openai-responses')
+      } else if (groupId) {
+        // 兼容单分组模式
+        await accountGroupService.addAccountToGroup(account.id, groupId, 'openai-responses')
+      }
+    }
+
     res.json({ success: true, account })
   } catch (error) {
     logger.error('Failed to create OpenAI-Responses account:', error)
@@ -8037,6 +8067,57 @@ router.put('/openai-responses-accounts/:id', authenticateAdmin, async (req, res)
         })
       }
       updates.priority = priority.toString()
+    }
+
+    // 验证accountType的有效性
+    if (updates.accountType && !['shared', 'dedicated', 'group'].includes(updates.accountType)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid account type. Must be "shared", "dedicated" or "group"'
+      })
+    }
+
+    // 如果更新为分组类型，验证groupId或groupIds
+    if (
+      updates.accountType === 'group' &&
+      !updates.groupId &&
+      (!updates.groupIds || updates.groupIds.length === 0)
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: 'Group ID or Group IDs are required for group type accounts'
+      })
+    }
+
+    // 获取账户当前信息以处理分组变更
+    const currentAccount = await openaiResponsesAccountService.getAccount(id)
+    if (!currentAccount) {
+      return res.status(404).json({ success: false, error: 'Account not found' })
+    }
+
+    // 处理分组的变更
+    if (updates.accountType !== undefined) {
+      // 如果之前是分组类型，需要从所有分组中移除
+      if (currentAccount.accountType === 'group') {
+        await accountGroupService.removeAccountFromAllGroups(id)
+      }
+
+      // 如果更新为分组类型，添加到新分组
+      if (updates.accountType === 'group') {
+        if (updates.groupIds && updates.groupIds.length > 0) {
+          await accountGroupService.setAccountGroups(id, updates.groupIds, 'openai-responses')
+        } else if (updates.groupId) {
+          await accountGroupService.addAccountToGroup(id, updates.groupId, 'openai-responses')
+        }
+      }
+    } else if (currentAccount.accountType === 'group' && (updates.groupId || updates.groupIds)) {
+      // 如果保持分组类型但更改了分组ID
+      await accountGroupService.removeAccountFromAllGroups(id)
+      if (updates.groupIds && updates.groupIds.length > 0) {
+        await accountGroupService.setAccountGroups(id, updates.groupIds, 'openai-responses')
+      } else if (updates.groupId) {
+        await accountGroupService.addAccountToGroup(id, updates.groupId, 'openai-responses')
+      }
     }
 
     const result = await openaiResponsesAccountService.updateAccount(id, updates)
