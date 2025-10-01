@@ -7913,8 +7913,13 @@ router.get('/openai-responses-accounts', authenticateAdmin, async (req, res) => 
     // 根据分组ID筛选
     if (groupId) {
       const group = await accountGroupService.getGroup(groupId)
-      if (group && group.platform === 'openai' && group.memberIds && group.memberIds.length > 0) {
-        accounts = accounts.filter((account) => group.memberIds.includes(account.id))
+      if (group && group.platform === 'openai') {
+        const memberIds = await accountGroupService.getGroupMembers(groupId)
+        if (memberIds && memberIds.length > 0) {
+          accounts = accounts.filter((account) => memberIds.includes(account.id))
+        } else {
+          accounts = []
+        }
       } else {
         accounts = []
       }
