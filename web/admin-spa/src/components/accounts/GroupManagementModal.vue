@@ -188,9 +188,7 @@
                         : 'text-red-600 hover:text-red-800'
                     ]"
                     :disabled="group.memberCount > 0"
-                    :title="
-                      group.memberCount > 0 ? '分组内还有成员，无法删除' : '删除分组'
-                    "
+                    :title="group.memberCount > 0 ? '分组内还有成员，无法删除' : '删除分组'"
                     @click="deleteGroup(group)"
                   >
                     <i class="fas fa-trash" />
