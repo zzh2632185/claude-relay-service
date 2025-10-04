@@ -181,9 +181,16 @@
                     <i class="fas fa-edit" />
                   </button>
                   <button
-                    class="text-red-600 transition-colors hover:text-red-800"
+                    :class="[
+                      'transition-colors',
+                      group.memberCount > 0
+                        ? 'cursor-not-allowed text-gray-400 opacity-50'
+                        : 'text-red-600 hover:text-red-800'
+                    ]"
                     :disabled="group.memberCount > 0"
-                    title="删除"
+                    :title="
+                      group.memberCount > 0 ? '分组内还有成员，无法删除' : '删除分组'
+                    "
                     @click="deleteGroup(group)"
                   >
                     <i class="fas fa-trash" />
