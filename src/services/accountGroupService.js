@@ -28,8 +28,8 @@ class AccountGroupService {
       }
 
       // 验证平台类型
-      if (!['claude', 'gemini', 'openai'].includes(platform)) {
-        throw new Error('平台类型必须是 claude、gemini 或 openai')
+      if (!['claude', 'gemini', 'openai', 'droid'].includes(platform)) {
+        throw new Error('平台类型必须是 claude、gemini、openai 或 droid')
       }
 
       // 验证调度策略
@@ -348,7 +348,8 @@ class AccountGroupService {
           keyData &&
           (keyData.claudeAccountId === groupKey ||
             keyData.geminiAccountId === groupKey ||
-            keyData.openaiAccountId === groupKey)
+            keyData.openaiAccountId === groupKey ||
+            keyData.droidAccountId === groupKey)
         ) {
           boundApiKeys.push({
             id: keyId,
