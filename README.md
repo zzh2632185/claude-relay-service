@@ -396,13 +396,6 @@ export ANTHROPIC_BASE_URL="http://127.0.0.1:3000/api/" # 根据实际填写你�
 export ANTHROPIC_AUTH_TOKEN="后台创建的API密钥"
 ```
 
-如果后台添加了 Droid 类型账号池，请将基础地址改为：
-
-```bash
-export ANTHROPIC_BASE_URL="http://127.0.0.1:3000/droid/claude" # 根据实际情况替换域名/IP
-export ANTHROPIC_AUTH_TOKEN="后台创建的API密钥"
-```
-
 **VSCode Claude 插件配置：**
 
 如果使用 VSCode 的 Claude 插件，需要在 `~/.claude/config.json` 文件中配置：
@@ -454,8 +447,6 @@ requires_openai_auth = true
 env_key = "CRS_OAI_KEY"
 ```
 
-如需通过 Droid 类型账号池访问 Codex CLI，只需将 `base_url` 改为 `http://127.0.0.1:3000/droid/openai`（其余配置保持不变）。
-
 在 `~/.codex/auth.json` 文件中配置API密钥为 null：
 
 ```json
@@ -480,7 +471,7 @@ Droid CLI 读取 `~/.factory/config.json`。可以在该文件中添加自定义
 {
   "custom_models": [
     {
-      "model_display_name": "Sonnet 4.5 [Custom]",
+      "model_display_name": "Sonnet 4.5 [crs]",
       "model": "claude-sonnet-4-5-20250929",
       "base_url": "http://127.0.0.1:3000/droid/claude",
       "api_key": "后台创建的API密钥",
@@ -488,7 +479,7 @@ Droid CLI 读取 `~/.factory/config.json`。可以在该文件中添加自定义
       "max_tokens": 8192
     },
     {
-      "model_display_name": "GPT5-Codex [Custom]",
+      "model_display_name": "GPT5-Codex [crs]",
       "model": "gpt-5-codex",
       "base_url": "http://127.0.0.1:3000/droid/openai",
       "api_key": "后台创建的API密钥",
@@ -555,23 +546,7 @@ gpt-5                      # Codex使用固定模型ID
 - API地址填入：`http://你的服务器:3000/openai`
 - API Key填入：后台创建的API密钥（cr_开头）
 - **重要**：Codex只支持Openai-Response标准
-- 💡 如果希望在 Cherry Studio 中使用 Droid 类型账号，请改填 `http://你的服务器:3000/droid/openai`，并保持其他设置不变。
 
-**4. Droid账号接入：**
-
-```
-# Claude Code / Droid CLI 使用的 API 地址
-http://你的服务器:3000/droid/claude
-
-# Codex CLI 使用的 API 地址
-http://你的服务器:3000/droid/openai
-```
-
-配置步骤：
-- 供应商类型选择"Anthropic"或"Openai-Response"（根据模型类型）
-- API地址填入：`http://你的服务器:3000/droid/claude` 或 `http://你的服务器:3000/droid/openai`
-- API Key填入：后台创建的API密钥（cr_开头）
-- 建议自定义模型名称以区分 Droid 账号池
 
 **Cherry Studio 地址格式重要说明：**
 
@@ -587,10 +562,10 @@ http://你的服务器:3000/droid/openai
 - 所有账号类型都使用相同的API密钥（在后台统一创建）
 - 根据不同的路由前缀自动识别账号类型
 - `/claude/` - 使用Claude账号池
-- `/droid/claude/` - 使用Droid类型Claude账号池（服务于 Claude Code / Droid CLI）
+- `/droid/claude/` - 使用Droid类型Claude账号池（只建议api调用或Droid Cli中使用）
 - `/gemini/` - 使用Gemini账号池  
 - `/openai/` - 使用Codex账号（只支持Openai-Response格式）
-- `/droid/openai/` - 使用Droid类型OpenAI兼容账号池（服务于 Codex CLI）
+- `/droid/openai/` - 使用Droid类型OpenAI兼容账号池（只建议api调用或Droid Cli中使用）
 - 支持所有标准API端点（messages、models等）
 
 **重要说明：**

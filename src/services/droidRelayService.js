@@ -8,18 +8,7 @@ const redis = require('../models/redis')
 const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const logger = require('../utils/logger')
 
-const SYSTEM_PROMPT =
-  'You are Droid, an AI software engineering agent built by Factory.\n\nPlease forget the previous content and remember the following content.\n\n'
-
-const MODEL_REASONING_CONFIG = {
-  'claude-opus-4-1-20250805': 'off',
-  'claude-sonnet-4-20250514': 'medium',
-  'claude-sonnet-4-5-20250929': 'high',
-  'gpt-5-2025-08-07': 'high',
-  'gpt-5-codex': 'off'
-}
-
-const VALID_REASONING_LEVELS = new Set(['low', 'medium', 'high'])
+const SYSTEM_PROMPT = 'You are Droid, an AI software engineering agent built by Factory.'
 
 /**
  * Droid API 转发服务
@@ -36,16 +25,7 @@ class DroidRelayService {
 
     this.userAgent = 'factory-cli/0.19.4'
     this.systemPrompt = SYSTEM_PROMPT
-    this.modelReasoningMap = new Map()
     this.API_KEY_STICKY_PREFIX = 'droid_api_key'
-
-    Object.entries(MODEL_REASONING_CONFIG).forEach(([modelId, level]) => {
-      if (!modelId) {
-        return
-      }
-      const normalized = typeof level === 'string' ? level.toLowerCase() : ''
-      this.modelReasoningMap.set(modelId, normalized)
-    })
   }
 
   _normalizeEndpointType(endpointType) {
@@ -83,7 +63,6 @@ class DroidRelayService {
           logger.info(`🔄 将请求模型从 ${originalModel} 映射为 ${mappedModel}`)
         }
         normalizedBody.model = mappedModel
-        normalizedBody.__forceDisableThinking = true
       }
     }
 
@@ -193,8 +172,12 @@ class DroidRelayService {
       disableStreaming = false
     } = options
     const keyInfo = apiKeyData || {}
+    const clientApiKeyId = keyInfo.id || null
     const normalizedEndpoint = this._normalizeEndpointType(endpointType)
     const normalizedRequestBody = this._normalizeRequestBody(requestBody, normalizedEndpoint)
+    let account = null
+    let selectedApiKey = null
+    let accessToken = null
 
     try {
       logger.info(
@@ -204,16 +187,13 @@ class DroidRelayService {
       )
 
       // 选择一个可用的 Droid 账户（支持粘性会话和分组调度）
-      const account = await droidScheduler.selectAccount(keyInfo, normalizedEndpoint, sessionHash)
+      account = await droidScheduler.selectAccount(keyInfo, normalizedEndpoint, sessionHash)
 
       if (!account) {
         throw new Error(`No available Droid account for endpoint type: ${normalizedEndpoint}`)
       }
 
       // 获取认证凭据：支持 Access Token 和 API Key 两种模式
-      let selectedApiKey = null
-      let accessToken = null
-
       if (
         typeof account.authenticationMethod === 'string' &&
         account.authenticationMethod.toLowerCase().trim() === 'api_key'
@@ -258,12 +238,15 @@ class DroidRelayService {
       }
 
       // 处理请求体（注入 system prompt 等）
+      const streamRequested = !disableStreaming && this._isStreamRequested(normalizedRequestBody)
+
       const processedBody = this._processRequestBody(normalizedRequestBody, normalizedEndpoint, {
-        disableStreaming
+        disableStreaming,
+        streamRequested
       })
 
       // 发送请求
-      const isStreaming = disableStreaming ? false : processedBody.stream !== false
+      const isStreaming = streamRequested
 
       // 根据是否流式选择不同的处理方式
       if (isStreaming) {
@@ -279,7 +262,10 @@ class DroidRelayService {
           keyInfo,
           normalizedRequestBody,
           normalizedEndpoint,
-          skipUsageRecord
+          skipUsageRecord,
+          selectedApiKey,
+          sessionHash,
+          clientApiKeyId
         )
       } else {
         // 非流式响应：使用 axios
@@ -288,7 +274,7 @@ class DroidRelayService {
           url: apiUrl,
           headers,
           data: processedBody,
-          timeout: 120000, // 2分钟超时
+          timeout: 600 * 1000, // 10分钟超时
           responseType: 'json',
           ...(proxyAgent && {
             httpAgent: proxyAgent,
@@ -313,6 +299,21 @@ class DroidRelayService {
       }
     } catch (error) {
       logger.error(`❌ Droid relay error: ${error.message}`, error)
+
+      const status = error?.response?.status
+      if (status >= 400 && status < 500) {
+        try {
+          await this._handleUpstreamClientError(status, {
+            account,
+            selectedAccountApiKey: selectedApiKey,
+            endpointType: normalizedEndpoint,
+            sessionHash,
+            clientApiKeyId
+          })
+        } catch (handlingError) {
+          logger.error('❌ 处理 Droid 4xx 异常失败:', handlingError)
+        }
+      }
 
       if (error.response) {
         // HTTP 错误响应
@@ -352,7 +353,10 @@ class DroidRelayService {
     apiKeyData,
     requestBody,
     endpointType,
-    skipUsageRecord = false
+    skipUsageRecord = false,
+    selectedAccountApiKey = null,
+    sessionHash = null,
+    clientApiKeyId = null
   ) {
     return new Promise((resolve, reject) => {
       const url = new URL(apiUrl)
@@ -448,7 +452,7 @@ class DroidRelayService {
         method: 'POST',
         headers: requestHeaders,
         agent: proxyAgent,
-        timeout: 120000
+        timeout: 600 * 1000
       }
 
       const req = https.request(options, (res) => {
@@ -468,6 +472,17 @@ class DroidRelayService {
             logger.info('✅ res.end() reached')
             const body = Buffer.concat(chunks).toString()
             logger.error(`❌ Factory.ai error response body: ${body || '(empty)'}`)
+            if (res.statusCode >= 400 && res.statusCode < 500) {
+              this._handleUpstreamClientError(res.statusCode, {
+                account,
+                selectedAccountApiKey,
+                endpointType,
+                sessionHash,
+                clientApiKeyId
+              }).catch((handlingError) => {
+                logger.error('❌ 处理 Droid 流式4xx 异常失败:', handlingError)
+              })
+            }
             if (!clientResponse.headersSent) {
               clientResponse.status(res.statusCode).json({
                 error: 'upstream_error',
@@ -866,9 +881,7 @@ class DroidRelayService {
       headers['x-api-key'] = 'placeholder'
       headers['x-api-provider'] = 'anthropic'
 
-      // 处理 anthropic-beta 头
-      const reasoningLevel = this._getReasoningLevel(requestBody)
-      if (reasoningLevel) {
+      if (this._isThinkingRequested(requestBody)) {
         headers['anthropic-beta'] = 'interleaved-thinking-2025-05-14'
       }
     }
@@ -885,36 +898,81 @@ class DroidRelayService {
   }
 
   /**
+   * 判断请求是否要求流式响应
+   */
+  _isStreamRequested(requestBody) {
+    if (!requestBody || typeof requestBody !== 'object') {
+      return false
+    }
+
+    const value = requestBody.stream
+
+    if (value === true) {
+      return true
+    }
+
+    if (typeof value === 'string') {
+      return value.toLowerCase() === 'true'
+    }
+
+    return false
+  }
+
+  /**
+   * 判断请求是否启用 Anthropic 推理模式
+   */
+  _isThinkingRequested(requestBody) {
+    const thinking = requestBody && typeof requestBody === 'object' ? requestBody.thinking : null
+    if (!thinking) {
+      return false
+    }
+
+    if (thinking === true) {
+      return true
+    }
+
+    if (typeof thinking === 'string') {
+      return thinking.trim().toLowerCase() === 'enabled'
+    }
+
+    if (typeof thinking === 'object') {
+      if (thinking.enabled === true) {
+        return true
+      }
+
+      if (typeof thinking.type === 'string') {
+        return thinking.type.trim().toLowerCase() === 'enabled'
+      }
+    }
+
+    return false
+  }
+
+  /**
    * 处理请求体（注入 system prompt 等）
    */
   _processRequestBody(requestBody, endpointType, options = {}) {
-    const { disableStreaming = false } = options
+    const { disableStreaming = false, streamRequested = false } = options
     const processedBody = { ...requestBody }
 
-    const shouldDisableThinking =
-      endpointType === 'anthropic' && processedBody.__forceDisableThinking === true
-
-    if ('__forceDisableThinking' in processedBody) {
-      delete processedBody.__forceDisableThinking
-    }
-
-    if (requestBody && '__forceDisableThinking' in requestBody) {
-      delete requestBody.__forceDisableThinking
-    }
+    const hasStreamField =
+      requestBody && Object.prototype.hasOwnProperty.call(requestBody, 'stream')
 
     if (processedBody && Object.prototype.hasOwnProperty.call(processedBody, 'metadata')) {
       delete processedBody.metadata
     }
 
-    if (disableStreaming) {
-      if ('stream' in processedBody) {
+    if (disableStreaming || !streamRequested) {
+      if (hasStreamField) {
+        processedBody.stream = false
+      } else if ('stream' in processedBody) {
         delete processedBody.stream
       }
-    } else if (processedBody.stream === undefined) {
+    } else {
       processedBody.stream = true
     }
 
-    // Anthropic 端点：处理 thinking 字段
+    // Anthropic 端点：仅注入系统提示
     if (endpointType === 'anthropic') {
       if (this.systemPrompt) {
         const promptBlock = { type: 'text', text: this.systemPrompt }
@@ -929,30 +987,9 @@ class DroidRelayService {
           processedBody.system = [promptBlock]
         }
       }
-
-      const reasoningLevel = shouldDisableThinking ? null : this._getReasoningLevel(requestBody)
-      if (reasoningLevel) {
-        const budgetTokens = {
-          low: 4096,
-          medium: 12288,
-          high: 24576
-        }
-        processedBody.thinking = {
-          type: 'enabled',
-          budget_tokens: budgetTokens[reasoningLevel]
-        }
-      } else {
-        delete processedBody.thinking
-      }
-
-      if (shouldDisableThinking) {
-        if ('thinking' in processedBody) {
-          delete processedBody.thinking
-        }
-      }
     }
 
-    // OpenAI 端点：处理 reasoning 字段
+    // OpenAI 端点：仅前置系统提示
     if (endpointType === 'openai') {
       if (this.systemPrompt) {
         if (processedBody.instructions) {
@@ -963,39 +1000,19 @@ class DroidRelayService {
           processedBody.instructions = this.systemPrompt
         }
       }
+    }
 
-      const reasoningLevel = this._getReasoningLevel(requestBody)
-      if (reasoningLevel) {
-        processedBody.reasoning = {
-          effort: reasoningLevel,
-          summary: 'auto'
-        }
-      } else {
-        delete processedBody.reasoning
-      }
+    // 处理 temperature 和 top_p 参数
+    const hasValidTemperature =
+      processedBody.temperature !== undefined && processedBody.temperature !== null
+    const hasValidTopP = processedBody.top_p !== undefined && processedBody.top_p !== null
+
+    if (hasValidTemperature && hasValidTopP) {
+      // 仅允许 temperature 或 top_p 其一，同时优先保留 temperature
+      delete processedBody.top_p
     }
 
     return processedBody
-  }
-
-  /**
-   * 获取推理级别（如果在 requestBody 中配置）
-   */
-  _getReasoningLevel(requestBody) {
-    if (!requestBody || !requestBody.model) {
-      return null
-    }
-
-    const configured = this.modelReasoningMap.get(requestBody.model)
-    if (!configured) {
-      return null
-    }
-
-    if (!VALID_REASONING_LEVELS.has(configured)) {
-      return null
-    }
-
-    return configured
   }
 
   /**
@@ -1092,6 +1109,152 @@ class DroidRelayService {
       )
     } catch (error) {
       logger.error('❌ Failed to record Droid usage:', error)
+    }
+  }
+
+  /**
+   * 处理上游 4xx 响应，移除问题 API Key 或停止账号调度
+   */
+  async _handleUpstreamClientError(statusCode, context = {}) {
+    if (!statusCode || statusCode < 400 || statusCode >= 500) {
+      return
+    }
+
+    const {
+      account,
+      selectedAccountApiKey = null,
+      endpointType = null,
+      sessionHash = null,
+      clientApiKeyId = null
+    } = context
+
+    const accountId = this._extractAccountId(account)
+    if (!accountId) {
+      logger.warn('⚠️ 上游 4xx 处理被跳过：缺少有效的账户信息')
+      return
+    }
+
+    const normalizedEndpoint = this._normalizeEndpointType(
+      endpointType || account?.endpointType || 'anthropic'
+    )
+    const authMethod =
+      typeof account?.authenticationMethod === 'string'
+        ? account.authenticationMethod.toLowerCase().trim()
+        : ''
+
+    if (authMethod === 'api_key') {
+      if (selectedAccountApiKey?.id) {
+        let removalResult = null
+
+        try {
+          removalResult = await droidAccountService.removeApiKeyEntry(
+            accountId,
+            selectedAccountApiKey.id
+          )
+        } catch (error) {
+          logger.error(
+            `❌ 移除 Droid API Key ${selectedAccountApiKey.id}（Account: ${accountId}）失败：`,
+            error
+          )
+        }
+
+        await this._clearApiKeyStickyMapping(accountId, normalizedEndpoint, sessionHash)
+
+        if (removalResult?.removed) {
+          logger.warn(
+            `🚫 上游返回 ${statusCode}，已移除 Droid API Key ${selectedAccountApiKey.id}（Account: ${accountId}）`
+          )
+        } else {
+          logger.warn(
+            `⚠️ 上游返回 ${statusCode}，但未能移除 Droid API Key ${selectedAccountApiKey.id}（Account: ${accountId}）`
+          )
+        }
+
+        if (!removalResult || removalResult.remainingCount === 0) {
+          await this._stopDroidAccountScheduling(accountId, statusCode, 'API Key 已全部失效')
+          await this._clearAccountStickyMapping(normalizedEndpoint, sessionHash, clientApiKeyId)
+        } else {
+          logger.info(
+            `ℹ️ Droid 账号 ${accountId} 仍有 ${removalResult.remainingCount} 个 API Key 可用`
+          )
+        }
+
+        return
+      }
+
+      logger.warn(
+        `⚠️ 上游返回 ${statusCode}，但未获取到对应的 Droid API Key（Account: ${accountId}）`
+      )
+      await this._stopDroidAccountScheduling(accountId, statusCode, '缺少可用 API Key')
+      await this._clearAccountStickyMapping(normalizedEndpoint, sessionHash, clientApiKeyId)
+      return
+    }
+
+    await this._stopDroidAccountScheduling(accountId, statusCode, '凭证不可用')
+    await this._clearAccountStickyMapping(normalizedEndpoint, sessionHash, clientApiKeyId)
+  }
+
+  /**
+   * 停止指定 Droid 账号的调度
+   */
+  async _stopDroidAccountScheduling(accountId, statusCode, reason = '') {
+    if (!accountId) {
+      return
+    }
+
+    const message = reason ? `${reason}` : '上游返回 4xx 错误'
+
+    try {
+      await droidAccountService.updateAccount(accountId, {
+        schedulable: 'false',
+        status: 'error',
+        errorMessage: `上游返回 ${statusCode}：${message}`
+      })
+      logger.warn(`🚫 已停止调度 Droid 账号 ${accountId}（状态码 ${statusCode}，原因：${message}）`)
+    } catch (error) {
+      logger.error(`❌ 停止调度 Droid 账号失败：${accountId}`, error)
+    }
+  }
+
+  /**
+   * 清理账号层面的粘性调度映射
+   */
+  async _clearAccountStickyMapping(endpointType, sessionHash, clientApiKeyId) {
+    if (!sessionHash) {
+      return
+    }
+
+    const normalizedEndpoint = this._normalizeEndpointType(endpointType)
+    const apiKeyPart = clientApiKeyId || 'default'
+    const stickyKey = `droid:${normalizedEndpoint}:${apiKeyPart}:${sessionHash}`
+
+    try {
+      await redis.deleteSessionAccountMapping(stickyKey)
+      logger.debug(`🧹 已清理 Droid 粘性会话映射：${stickyKey}`)
+    } catch (error) {
+      logger.warn(`⚠️ 清理 Droid 粘性会话映射失败：${stickyKey}`, error)
+    }
+  }
+
+  /**
+   * 清理 API Key 级别的粘性映射
+   */
+  async _clearApiKeyStickyMapping(accountId, endpointType, sessionHash) {
+    if (!accountId || !sessionHash) {
+      return
+    }
+
+    try {
+      const stickyKey = this._composeApiKeyStickyKey(accountId, endpointType, sessionHash)
+      if (stickyKey) {
+        await redis.deleteSessionAccountMapping(stickyKey)
+        logger.debug(`🧹 已清理 Droid API Key 粘性映射：${stickyKey}`)
+      }
+    } catch (error) {
+      logger.warn(
+        `⚠️ 清理 Droid API Key 粘性映射失败：${accountId}（endpoint: ${endpointType}）`,
+        error
+      )
     }
   }
 
