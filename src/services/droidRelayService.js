@@ -7,8 +7,10 @@ const apiKeyService = require('./apiKeyService')
 const redis = require('../models/redis')
 const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const logger = require('../utils/logger')
+const runtimeAddon = require('../utils/runtimeAddon')
 
 const SYSTEM_PROMPT = 'You are Droid, an AI software engineering agent built by Factory.'
+const RUNTIME_EVENT_FMT_PAYLOAD = 'fmtPayload'
 
 /**
  * Droid API 转发服务
@@ -23,7 +25,7 @@ class DroidRelayService {
       openai: '/o/v1/responses'
     }
 
-    this.userAgent = 'factory-cli/0.19.4'
+    this.userAgent = 'factory-cli/0.19.12'
     this.systemPrompt = SYSTEM_PROMPT
     this.API_KEY_STICKY_PREFIX = 'droid_api_key'
   }
@@ -121,12 +123,18 @@ class DroidRelayService {
       throw new Error(`Droid account ${account.id} 未配置任何 API Key`)
     }
 
+    // 过滤掉异常状态的API Key
+    const activeEntries = entries.filter((entry) => entry.status !== 'error')
+    if (!activeEntries || activeEntries.length === 0) {
+      throw new Error(`Droid account ${account.id} 没有可用的 API Key（所有API Key均已异常）`)
+    }
+
     const stickyKey = this._composeApiKeyStickyKey(account.id, endpointType, sessionHash)
 
     if (stickyKey) {
       const mappedKeyId = await redis.getSessionAccountMapping(stickyKey)
       if (mappedKeyId) {
-        const mappedEntry = entries.find((entry) => entry.id === mappedKeyId)
+        const mappedEntry = activeEntries.find((entry) => entry.id === mappedKeyId)
         if (mappedEntry) {
           await redis.extendSessionAccountMappingTTL(stickyKey)
           await droidAccountService.touchApiKeyUsage(account.id, mappedEntry.id)
@@ -138,7 +146,7 @@ class DroidRelayService {
       }
     }
 
-    const selectedEntry = entries[Math.floor(Math.random() * entries.length)]
+    const selectedEntry = activeEntries[Math.floor(Math.random() * activeEntries.length)]
     if (!selectedEntry) {
       throw new Error(`Droid account ${account.id} 没有可用的 API Key`)
     }
@@ -150,7 +158,7 @@ class DroidRelayService {
     await droidAccountService.touchApiKeyUsage(account.id, selectedEntry.id)
 
     logger.info(
-      `🔐 随机选取 Droid API Key ${selectedEntry.id}（Account: ${account.id}, Keys: ${entries.length}）`
+      `🔐 随机选取 Droid API Key ${selectedEntry.id}（Account: ${account.id}, Active Keys: ${activeEntries.length}/${entries.length}）`
     )
 
     return selectedEntry
@@ -240,10 +248,33 @@ class DroidRelayService {
       // 处理请求体（注入 system prompt 等）
       const streamRequested = !disableStreaming && this._isStreamRequested(normalizedRequestBody)
 
-      const processedBody = this._processRequestBody(normalizedRequestBody, normalizedEndpoint, {
+      let processedBody = this._processRequestBody(normalizedRequestBody, normalizedEndpoint, {
         disableStreaming,
         streamRequested
       })
+
+      const extensionPayload = {
+        body: processedBody,
+        endpoint: normalizedEndpoint,
+        rawRequest: normalizedRequestBody,
+        originalRequest: requestBody
+      }
+
+      const extensionResult = runtimeAddon.emitSync(RUNTIME_EVENT_FMT_PAYLOAD, extensionPayload)
+      const resolvedPayload =
+        extensionResult && typeof extensionResult === 'object' ? extensionResult : extensionPayload
+
+      if (resolvedPayload && typeof resolvedPayload === 'object') {
+        if (resolvedPayload.abortResponse && typeof resolvedPayload.abortResponse === 'object') {
+          return resolvedPayload.abortResponse
+        }
+
+        if (resolvedPayload.body && typeof resolvedPayload.body === 'object') {
+          processedBody = resolvedPayload.body
+        } else if (resolvedPayload !== extensionPayload) {
+          processedBody = resolvedPayload
+        }
+      }
 
       // 发送请求
       const isStreaming = streamRequested
@@ -1144,39 +1175,50 @@ class DroidRelayService {
 
     if (authMethod === 'api_key') {
       if (selectedAccountApiKey?.id) {
-        let removalResult = null
+        let markResult = null
+        const errorMessage = `${statusCode}`
 
         try {
-          removalResult = await droidAccountService.removeApiKeyEntry(
+          // 标记API Key为异常状态而不是删除
+          markResult = await droidAccountService.markApiKeyAsError(
             accountId,
-            selectedAccountApiKey.id
+            selectedAccountApiKey.id,
+            errorMessage
           )
         } catch (error) {
           logger.error(
-            `❌ 移除 Droid API Key ${selectedAccountApiKey.id}（Account: ${accountId}）失败：`,
+            `❌ 标记 Droid API Key ${selectedAccountApiKey.id} 异常状态（Account: ${accountId}）失败：`,
             error
           )
         }
 
         await this._clearApiKeyStickyMapping(accountId, normalizedEndpoint, sessionHash)
 
-        if (removalResult?.removed) {
+        if (markResult?.marked) {
           logger.warn(
-            `🚫 上游返回 ${statusCode}，已移除 Droid API Key ${selectedAccountApiKey.id}（Account: ${accountId}）`
+            `⚠️ 上游返回 ${statusCode}，已标记 Droid API Key ${selectedAccountApiKey.id} 为异常状态（Account: ${accountId}）`
           )
         } else {
           logger.warn(
-            `⚠️ 上游返回 ${statusCode}，但未能移除 Droid API Key ${selectedAccountApiKey.id}（Account: ${accountId}）`
+            `⚠️ 上游返回 ${statusCode}，但未能标记 Droid API Key ${selectedAccountApiKey.id} 异常状态（Account: ${accountId}）：${markResult?.error || '未知错误'}`
           )
         }
 
-        if (!removalResult || removalResult.remainingCount === 0) {
-          await this._stopDroidAccountScheduling(accountId, statusCode, 'API Key 已全部失效')
+        // 检查是否还有可用的API Key
+        try {
+          const availableEntries = await droidAccountService.getDecryptedApiKeyEntries(accountId)
+          const activeEntries = availableEntries.filter((entry) => entry.status !== 'error')
+
+          if (activeEntries.length === 0) {
+            await this._stopDroidAccountScheduling(accountId, statusCode, '所有API Key均已异常')
+            await this._clearAccountStickyMapping(normalizedEndpoint, sessionHash, clientApiKeyId)
+          } else {
+            logger.info(`ℹ️ Droid 账号 ${accountId} 仍有 ${activeEntries.length} 个可用 API Key`)
+          }
+        } catch (error) {
+          logger.error(`❌ 检查可用API Key失败（Account: ${accountId}）：`, error)
+          await this._stopDroidAccountScheduling(accountId, statusCode, 'API Key检查失败')
           await this._clearAccountStickyMapping(normalizedEndpoint, sessionHash, clientApiKeyId)
-        } else {
-          logger.info(
-            `ℹ️ Droid 账号 ${accountId} 仍有 ${removalResult.remainingCount} 个 API Key 可用`
-          )
         }
 
         return

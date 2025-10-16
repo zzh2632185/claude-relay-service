@@ -1277,6 +1277,15 @@
                       + Sonnet 4
                     </button>
                     <button
+                      class="rounded-lg bg-indigo-100 px-3 py-1 text-xs text-indigo-700 transition-colors hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400 dark:hover:bg-indigo-900/50"
+                      type="button"
+                      @click="
+                        addPresetMapping('claude-sonnet-4-5-20250929', 'claude-sonnet-4-5-20250929')
+                      "
+                    >
+                      + Sonnet 4.5
+                    </button>
+                    <button
                       class="rounded-lg bg-purple-100 px-3 py-1 text-xs text-purple-700 transition-colors hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:hover:bg-purple-900/50"
                       type="button"
                       @click="
@@ -1295,7 +1304,44 @@
                       + Haiku 3.5
                     </button>
                     <button
+                      class="rounded-lg bg-emerald-100 px-3 py-1 text-xs text-emerald-700 transition-colors hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:hover:bg-emerald-900/50"
+                      type="button"
+                      @click="
+                        addPresetMapping('claude-haiku-4-5-20251001', 'claude-haiku-4-5-20251001')
+                      "
+                    >
+                      + Haiku 4.5
+                    </button>
+                    <button
+                      class="rounded-lg bg-cyan-100 px-3 py-1 text-xs text-cyan-700 transition-colors hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400 dark:hover:bg-cyan-900/50"
+                      type="button"
+                      @click="addPresetMapping('deepseek-chat', 'deepseek-chat')"
+                    >
+                      + DeepSeek
+                    </button>
+                    <button
                       class="rounded-lg bg-orange-100 px-3 py-1 text-xs text-orange-700 transition-colors hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:hover:bg-orange-900/50"
+                      type="button"
+                      @click="addPresetMapping('Qwen', 'Qwen')"
+                    >
+                      + Qwen
+                    </button>
+                    <button
+                      class="rounded-lg bg-pink-100 px-3 py-1 text-xs text-pink-700 transition-colors hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-400 dark:hover:bg-pink-900/50"
+                      type="button"
+                      @click="addPresetMapping('Kimi', 'Kimi')"
+                    >
+                      + Kimi
+                    </button>
+                    <button
+                      class="rounded-lg bg-teal-100 px-3 py-1 text-xs text-teal-700 transition-colors hover:bg-teal-200 dark:bg-teal-900/30 dark:text-teal-400 dark:hover:bg-teal-900/50"
+                      type="button"
+                      @click="addPresetMapping('GLM', 'GLM')"
+                    >
+                      + GLM
+                    </button>
+                    <button
+                      class="rounded-lg bg-amber-100 px-3 py-1 text-xs text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:hover:bg-amber-900/50"
                       type="button"
                       @click="
                         addPresetMapping('claude-opus-4-1-20250805', 'claude-sonnet-4-20250514')
@@ -1817,7 +1863,8 @@
                   <li>新会话将随机命中一个 Key，并在会话有效期内保持粘性。</li>
                   <li>若某 Key 失效，会自动切换到剩余可用 Key，最大化成功率。</li>
                   <li>
-                    若上游返回 4xx 错误码，该 Key 会被自动移除；全部 Key 清空后账号将暂停调度。
+                    若上游返回 4xx 错误码，该 Key 会被自动标记为异常；全部 Key
+                    异常后账号将暂停调度。
                   </li>
                 </ul>
               </div>
@@ -2628,6 +2675,15 @@
                     + Sonnet 4
                   </button>
                   <button
+                    class="rounded-lg bg-indigo-100 px-3 py-1 text-xs text-indigo-700 transition-colors hover:bg-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-400 dark:hover:bg-indigo-900/50"
+                    type="button"
+                    @click="
+                      addPresetMapping('claude-sonnet-4-5-20250929', 'claude-sonnet-4-5-20250929')
+                    "
+                  >
+                    + Sonnet 4.5
+                  </button>
+                  <button
                     class="rounded-lg bg-purple-100 px-3 py-1 text-xs text-purple-700 transition-colors hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:hover:bg-purple-900/50"
                     type="button"
                     @click="
@@ -2646,7 +2702,44 @@
                     + Haiku 3.5
                   </button>
                   <button
+                    class="rounded-lg bg-emerald-100 px-3 py-1 text-xs text-emerald-700 transition-colors hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:hover:bg-emerald-900/50"
+                    type="button"
+                    @click="
+                      addPresetMapping('claude-haiku-4-5-20251001', 'claude-haiku-4-5-20251001')
+                    "
+                  >
+                    + Haiku 4.5
+                  </button>
+                  <button
+                    class="rounded-lg bg-cyan-100 px-3 py-1 text-xs text-cyan-700 transition-colors hover:bg-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400 dark:hover:bg-cyan-900/50"
+                    type="button"
+                    @click="addPresetMapping('deepseek-chat', 'deepseek-chat')"
+                  >
+                    + DeepSeek
+                  </button>
+                  <button
                     class="rounded-lg bg-orange-100 px-3 py-1 text-xs text-orange-700 transition-colors hover:bg-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:hover:bg-orange-900/50"
+                    type="button"
+                    @click="addPresetMapping('Qwen', 'Qwen')"
+                  >
+                    + Qwen
+                  </button>
+                  <button
+                    class="rounded-lg bg-pink-100 px-3 py-1 text-xs text-pink-700 transition-colors hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-400 dark:hover:bg-pink-900/50"
+                    type="button"
+                    @click="addPresetMapping('Kimi', 'Kimi')"
+                  >
+                    + Kimi
+                  </button>
+                  <button
+                    class="rounded-lg bg-teal-100 px-3 py-1 text-xs text-teal-700 transition-colors hover:bg-teal-200 dark:bg-teal-900/30 dark:text-teal-400 dark:hover:bg-teal-900/50"
+                    type="button"
+                    @click="addPresetMapping('GLM', 'GLM')"
+                  >
+                    + GLM
+                  </button>
+                  <button
+                    class="rounded-lg bg-amber-100 px-3 py-1 text-xs text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:hover:bg-amber-900/50"
                     type="button"
                     @click="
                       addPresetMapping('claude-opus-4-1-20250805', 'claude-sonnet-4-20250514')
@@ -3011,10 +3104,18 @@
               >
                 <i class="fas fa-retweet text-sm text-white" />
               </div>
-              <div>
-                <h5 class="mb-2 font-semibold text-purple-900 dark:text-purple-200">
-                  更新 API Key
-                </h5>
+              <div class="flex-1">
+                <div class="mb-2 flex items-center justify-between">
+                  <h5 class="font-semibold text-purple-900 dark:text-purple-200">更新 API Key</h5>
+                  <button
+                    class="flex items-center gap-1.5 rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600"
+                    type="button"
+                    @click="showApiKeyManagement = true"
+                  >
+                    <i class="fas fa-list-ul" />
+                    <span>管理 API Key</span>
+                  </button>
+                </div>
                 <p class="mb-1 text-sm text-purple-800 dark:text-purple-200">
                   当前已保存 <strong>{{ existingApiKeyCount }}</strong> 条 API Key。您可以追加新的
                   Key，或通过下方模式快速覆盖、删除指定 Key。
@@ -3187,6 +3288,15 @@
       @close="showGroupManagement = false"
       @refresh="handleGroupRefresh"
     />
+
+    <!-- API Key 管理模态框 -->
+    <ApiKeyManagementModal
+      v-if="showApiKeyManagement"
+      :account-id="props.account?.id"
+      :account-name="props.account?.name"
+      @close="showApiKeyManagement = false"
+      @refresh="handleApiKeyRefresh"
+    />
   </Teleport>
 </template>
 
@@ -3200,6 +3310,7 @@ import ProxyConfig from './ProxyConfig.vue'
 import OAuthFlow from './OAuthFlow.vue'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
 import GroupManagementModal from './GroupManagementModal.vue'
+import ApiKeyManagementModal from './ApiKeyManagementModal.vue'
 
 const props = defineProps({
   account: {
@@ -3238,6 +3349,9 @@ const clearingCache = ref(false)
 
 // 平台分组状态
 const platformGroup = ref('')
+
+// API Key 管理模态框
+const showApiKeyManagement = ref(false)
 
 // 根据现有平台确定分组
 const determinePlatformGroup = (platform) => {
@@ -3472,9 +3586,13 @@ const commonModels = [
   { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', color: 'blue' },
   { value: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5', color: 'indigo' },
   { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku', color: 'green' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', color: 'emerald' },
   { value: 'claude-opus-4-20250514', label: 'Claude Opus 4', color: 'purple' },
   { value: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1', color: 'purple' },
-  { value: 'deepseek-chat', label: 'DeepSeek Chat', color: 'cyan' }
+  { value: 'deepseek-chat', label: 'DeepSeek Chat', color: 'cyan' },
+  { value: 'Qwen', label: 'Qwen', color: 'orange' },
+  { value: 'Kimi', label: 'Kimi', color: 'pink' },
+  { value: 'GLM', label: 'GLM', color: 'teal' }
 ]
 
 // 模型映射表数据
@@ -4814,6 +4932,30 @@ const handleNewGroup = () => {
 // 处理分组管理模态框刷新
 const handleGroupRefresh = async () => {
   await loadGroups()
+}
+
+// 处理 API Key 管理模态框刷新
+const handleApiKeyRefresh = async () => {
+  // 刷新账户信息以更新 API Key 数量
+  if (!props.account?.id) {
+    return
+  }
+
+  const refreshers = [
+    typeof accountsStore.fetchDroidAccounts === 'function'
+      ? accountsStore.fetchDroidAccounts
+      : null,
+    typeof accountsStore.fetchAllAccounts === 'function' ? accountsStore.fetchAllAccounts : null
+  ].filter(Boolean)
+
+  for (const refresher of refreshers) {
+    try {
+      await refresher()
+      return
+    } catch (error) {
+      console.error('刷新账户列表失败:', error)
+    }
+  }
 }
 
 // 监听平台变化，重置表单
