@@ -139,13 +139,16 @@ class DroidScheduler {
 
     let candidates = []
     let isDedicatedBinding = false
+    let groupId = null
+    let group = null
 
     if (apiKeyData?.droidAccountId) {
       const binding = apiKeyData.droidAccountId
       if (binding.startsWith('group:')) {
-        const groupId = binding.substring('group:'.length)
+        groupId = binding.substring('group:'.length)
+        group = await accountGroupService.getGroup(groupId)
         logger.info(
-          `🤖 API Key ${apiKeyData.name || apiKeyData.id} 绑定 Droid 分组 ${groupId}，按分组调度`
+          `🤖 API Key ${apiKeyData.name || apiKeyData.id} 绑定 Droid 分组 ${groupId}，按分组调度（策略：${group?.schedulingStrategy || 'lru'}）`
         )
         candidates = await this._loadGroupAccounts(groupId, normalizedEndpoint)
       } else {
@@ -175,7 +178,8 @@ class DroidScheduler {
       )
     }
 
-    if (stickyKey && !isDedicatedBinding) {
+    // 轮询策略不使用会话粘性
+    if (stickyKey && !isDedicatedBinding && group?.schedulingStrategy !== 'round-robin') {
       const mappedAccountId = await redis.getSessionAccountMapping(stickyKey)
       if (mappedAccountId) {
         const mappedAccount = filtered.find((account) => account.id === mappedAccountId)
@@ -192,24 +196,74 @@ class DroidScheduler {
       }
     }
 
-    const sorted = this._sortCandidates(filtered)
-    const selected = sorted[0]
+    let selected
+
+    // 如果是分组调度且使用 round-robin 策略
+    if (group && group.schedulingStrategy === 'round-robin') {
+      selected = await this._selectByRoundRobin(filtered, groupId)
+    } else {
+      // 默认 LRU 策略：按优先级和最后使用时间排序
+      const sorted = this._sortCandidates(filtered)
+      selected = sorted[0]
+
+      // LRU 策略支持会话粘性
+      if (stickyKey && !isDedicatedBinding) {
+        await redis.setSessionAccountMapping(stickyKey, selected.id)
+      }
+    }
 
     if (!selected) {
       throw new Error(`No schedulable account available after sorting (${normalizedEndpoint})`)
     }
 
-    if (stickyKey && !isDedicatedBinding) {
-      await redis.setSessionAccountMapping(stickyKey, selected.id)
-    }
-
     await this._ensureLastUsedUpdated(selected.id)
 
     logger.info(
-      `🤖 选择 Droid 账号 ${selected.name || selected.id}（endpoint: ${normalizedEndpoint}, priority: ${selected.priority || 50}）`
+      `🤖 选择 Droid 账号 ${selected.name || selected.id}（endpoint: ${normalizedEndpoint}, priority: ${selected.priority || 50}${group ? `, 策略: ${group.schedulingStrategy || 'lru'}` : ''}）`
     )
 
     return selected
+  }
+
+  async _selectByRoundRobin(accounts, groupId) {
+    // 先按优先级分组
+    const accountsByPriority = {}
+    accounts.forEach((account) => {
+      const priority = parseInt(account.priority, 10) || 50
+      if (!accountsByPriority[priority]) {
+        accountsByPriority[priority] = []
+      }
+      accountsByPriority[priority].push(account)
+    })
+
+    // 获取最高优先级（数字越小优先级越高）
+    const priorities = Object.keys(accountsByPriority)
+      .map((p) => parseInt(p, 10))
+      .sort((a, b) => a - b)
+    const highestPriority = priorities[0]
+    const highestPriorityAccounts = accountsByPriority[highestPriority]
+
+    // 按 name 排序，确保同优先级账户顺序稳定
+    highestPriorityAccounts.sort((a, b) => a.name.localeCompare(b.name))
+
+    // 为每个优先级维护独立的索引
+    const indexKey = `roundRobinIndex_${highestPriority}`
+    const group = await accountGroupService.getGroup(groupId)
+    const currentIndex = parseInt(group[indexKey], 10) || 0
+    const nextIndex = currentIndex % highestPriorityAccounts.length
+    const selectedAccount = highestPriorityAccounts[nextIndex]
+
+    // 更新该优先级组的索引
+    const updateData = {}
+    updateData[indexKey] = ((nextIndex + 1) % highestPriorityAccounts.length).toString()
+    const client = redis.getClientSafe()
+    await client.hmset(`account_group:${groupId}`, updateData)
+
+    logger.info(
+      `🔄 Droid Round-robin 选择（优先级 ${highestPriority}）: ${selectedAccount.name} (索引: ${nextIndex}/${highestPriorityAccounts.length})`
+    )
+
+    return selectedAccount
   }
 }
 
