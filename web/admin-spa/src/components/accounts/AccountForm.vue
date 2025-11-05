@@ -1142,6 +1142,23 @@
                 </div>
               </div>
 
+              <!-- 并发控制字段 -->
+              <div>
+                <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300">
+                  最大并发任务数
+                </label>
+                <input
+                  v-model.number="form.maxConcurrentTasks"
+                  class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                  min="0"
+                  placeholder="0 表示不限制"
+                  type="number"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  限制该账户的并发请求数量，0 表示不限制
+                </p>
+              </div>
+
               <div>
                 <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
                   >模型限制 (可选)</label
@@ -2540,6 +2557,23 @@
               </div>
             </div>
 
+            <!-- 并发控制字段（编辑模式）-->
+            <div>
+              <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300">
+                最大并发任务数
+              </label>
+              <input
+                v-model.number="form.maxConcurrentTasks"
+                class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                min="0"
+                placeholder="0 表示不限制"
+                type="number"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                限制该账户的并发请求数量，0 表示不限制
+              </p>
+            </div>
+
             <div>
               <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
                 >模型限制 (可选)</label
@@ -2872,6 +2906,23 @@
                   type="time"
                 />
               </div>
+            </div>
+
+            <!-- 并发控制字段 -->
+            <div>
+              <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300">
+                最大并发任务数
+              </label>
+              <input
+                v-model.number="form.maxConcurrentTasks"
+                class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                min="0"
+                placeholder="0 表示不限制"
+                type="number"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                限制该账户的并发请求数量，0 表示不限制
+              </p>
             </div>
           </div>
 
@@ -3542,6 +3593,8 @@ const form = ref({
   dailyQuota: props.account?.dailyQuota || 0,
   dailyUsage: props.account?.dailyUsage || 0,
   quotaResetTime: props.account?.quotaResetTime || '00:00',
+  // 并发控制字段
+  maxConcurrentTasks: props.account?.maxConcurrentTasks || 0,
   // Bedrock 特定字段
   accessKeyId: props.account?.accessKeyId || '',
   secretAccessKey: props.account?.secretAccessKey || '',
@@ -4007,7 +4060,35 @@ const handleOAuthSuccess = async (tokenInfo) => {
 
     if (currentPlatform === 'claude') {
       // Claude使用claudeAiOauth字段
-      data.claudeAiOauth = tokenInfo.claudeAiOauth || tokenInfo
+      const claudeOauthPayload = tokenInfo.claudeAiOauth || tokenInfo
+      data.claudeAiOauth = claudeOauthPayload
+      if (claudeOauthPayload) {
+        const extInfoPayload = {}
+        const extSource = claudeOauthPayload.extInfo
+        if (extSource && typeof extSource === 'object') {
+          if (extSource.org_uuid) {
+            extInfoPayload.org_uuid = extSource.org_uuid
+          }
+          if (extSource.account_uuid) {
+            extInfoPayload.account_uuid = extSource.account_uuid
+          }
+        }
+
+        if (!extSource) {
+          const orgUuid = claudeOauthPayload.organization?.uuid
+          const accountUuid = claudeOauthPayload.account?.uuid
+          if (orgUuid) {
+            extInfoPayload.org_uuid = orgUuid
+          }
+          if (accountUuid) {
+            extInfoPayload.account_uuid = accountUuid
+          }
+        }
+
+        if (Object.keys(extInfoPayload).length > 0) {
+          data.extInfo = extInfoPayload
+        }
+      }
       data.priority = form.value.priority || 50
       data.autoStopOnWarning = form.value.autoStopOnWarning || false
       data.useUnifiedUserAgent = form.value.useUnifiedUserAgent || false
@@ -4408,6 +4489,8 @@ const createAccount = async () => {
       // 额度管理字段
       data.dailyQuota = form.value.dailyQuota || 0
       data.quotaResetTime = form.value.quotaResetTime || '00:00'
+      // 并发控制字段
+      data.maxConcurrentTasks = form.value.maxConcurrentTasks || 0
     } else if (form.value.platform === 'openai-responses') {
       // OpenAI-Responses 账户特定数据
       data.baseApi = form.value.baseApi
@@ -4710,6 +4793,8 @@ const updateAccount = async () => {
       // 额度管理字段
       data.dailyQuota = form.value.dailyQuota || 0
       data.quotaResetTime = form.value.quotaResetTime || '00:00'
+      // 并发控制字段
+      data.maxConcurrentTasks = form.value.maxConcurrentTasks || 0
     }
 
     // OpenAI-Responses 特定更新
@@ -5300,7 +5385,9 @@ watch(
         // 额度管理字段
         dailyQuota: newAccount.dailyQuota || 0,
         dailyUsage: newAccount.dailyUsage || 0,
-        quotaResetTime: newAccount.quotaResetTime || '00:00'
+        quotaResetTime: newAccount.quotaResetTime || '00:00',
+        // 并发控制字段
+        maxConcurrentTasks: newAccount.maxConcurrentTasks || 0
       }
 
       // 如果是Claude Console账户，加载实时使用情况

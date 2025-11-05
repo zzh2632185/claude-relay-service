@@ -526,48 +526,126 @@ class UnifiedClaudeScheduler {
     const consoleAccounts = await claudeConsoleAccountService.getAllAccounts()
     logger.info(`📋 Found ${consoleAccounts.length} total Claude Console accounts`)
 
+    // 🔢 统计Console账户并发排除情况
+    let consoleAccountsEligibleCount = 0 // 符合基本条件的账户数
+    let consoleAccountsExcludedByConcurrency = 0 // 因并发满额被排除的账户数
+
+    // 🚀 收集需要并发检查的账户ID列表（批量查询优化）
+    const accountsNeedingConcurrencyCheck = []
+
     for (const account of consoleAccounts) {
+      // 主动检查封禁状态并尝试恢复（在过滤之前执行，确保可以恢复被封禁的账户）
+      const wasBlocked = await claudeConsoleAccountService.isAccountBlocked(account.id)
+
+      // 如果账户之前被封禁但现在已恢复，重新获取最新状态
+      let currentAccount = account
+      if (wasBlocked === false && account.status === 'account_blocked') {
+        // 可能刚刚被恢复，重新获取账户状态
+        const freshAccount = await claudeConsoleAccountService.getAccount(account.id)
+        if (freshAccount) {
+          currentAccount = freshAccount
+          logger.info(`🔄 Account ${account.name} was recovered from blocked status`)
+        }
+      }
+
       logger.info(
-        `🔍 Checking Claude Console account: ${account.name} - isActive: ${account.isActive}, status: ${account.status}, accountType: ${account.accountType}, schedulable: ${account.schedulable}`
+        `🔍 Checking Claude Console account: ${currentAccount.name} - isActive: ${currentAccount.isActive}, status: ${currentAccount.status}, accountType: ${currentAccount.accountType}, schedulable: ${currentAccount.schedulable}`
       )
 
-      // 注意：getAllAccounts返回的isActive是布尔值
+      // 注意：getAllAccounts返回的isActive是布尔值，getAccount返回的也是布尔值
       if (
-        account.isActive === true &&
-        account.status === 'active' &&
-        account.accountType === 'shared' &&
-        this._isSchedulable(account.schedulable)
+        currentAccount.isActive === true &&
+        currentAccount.status === 'active' &&
+        currentAccount.accountType === 'shared' &&
+        this._isSchedulable(currentAccount.schedulable)
       ) {
         // 检查是否可调度
 
         // 检查模型支持
-        if (!this._isModelSupportedByAccount(account, 'claude-console', requestedModel)) {
+        if (!this._isModelSupportedByAccount(currentAccount, 'claude-console', requestedModel)) {
           continue
         }
 
         // 检查订阅是否过期
-        if (claudeConsoleAccountService.isSubscriptionExpired(account)) {
+        if (claudeConsoleAccountService.isSubscriptionExpired(currentAccount)) {
           logger.debug(
-            `⏰ Claude Console account ${account.name} (${account.id}) expired at ${account.subscriptionExpiresAt}`
+            `⏰ Claude Console account ${currentAccount.name} (${currentAccount.id}) expired at ${currentAccount.subscriptionExpiresAt}`
           )
           continue
         }
 
         // 主动触发一次额度检查，确保状态即时生效
         try {
-          await claudeConsoleAccountService.checkQuotaUsage(account.id)
+          await claudeConsoleAccountService.checkQuotaUsage(currentAccount.id)
         } catch (e) {
           logger.warn(
-            `Failed to check quota for Claude Console account ${account.name}: ${e.message}`
+            `Failed to check quota for Claude Console account ${currentAccount.name}: ${e.message}`
           )
           // 继续处理该账号
         }
 
         // 检查是否被限流
-        const isRateLimited = await claudeConsoleAccountService.isAccountRateLimited(account.id)
-        const isQuotaExceeded = await claudeConsoleAccountService.isAccountQuotaExceeded(account.id)
+        const isRateLimited = await claudeConsoleAccountService.isAccountRateLimited(
+          currentAccount.id
+        )
+        const isQuotaExceeded = await claudeConsoleAccountService.isAccountQuotaExceeded(
+          currentAccount.id
+        )
 
+        // 🔢 记录符合基本条件的账户（通过了前面所有检查，但可能因并发被排除）
         if (!isRateLimited && !isQuotaExceeded) {
+          consoleAccountsEligibleCount++
+          // 🚀 将符合条件且需要并发检查的账户加入批量查询列表
+          if (currentAccount.maxConcurrentTasks > 0) {
+            accountsNeedingConcurrencyCheck.push(currentAccount)
+          } else {
+            // 未配置并发限制的账户直接加入可用池
+            availableAccounts.push({
+              ...currentAccount,
+              accountId: currentAccount.id,
+              accountType: 'claude-console',
+              priority: parseInt(currentAccount.priority) || 50,
+              lastUsedAt: currentAccount.lastUsedAt || '0'
+            })
+            logger.info(
+              `✅ Added Claude Console account to available pool: ${currentAccount.name} (priority: ${currentAccount.priority}, no concurrency limit)`
+            )
+          }
+        } else {
+          if (isRateLimited) {
+            logger.warn(`⚠️ Claude Console account ${currentAccount.name} is rate limited`)
+          }
+          if (isQuotaExceeded) {
+            logger.warn(`💰 Claude Console account ${currentAccount.name} quota exceeded`)
+          }
+        }
+      } else {
+        logger.info(
+          `❌ Claude Console account ${currentAccount.name} not eligible - isActive: ${currentAccount.isActive}, status: ${currentAccount.status}, accountType: ${currentAccount.accountType}, schedulable: ${currentAccount.schedulable}`
+        )
+      }
+    }
+
+    // 🚀 批量查询所有账户的并发数（Promise.all 并行执行）
+    if (accountsNeedingConcurrencyCheck.length > 0) {
+      logger.debug(
+        `🚀 Batch checking concurrency for ${accountsNeedingConcurrencyCheck.length} accounts`
+      )
+
+      const concurrencyCheckPromises = accountsNeedingConcurrencyCheck.map((account) =>
+        redis.getConsoleAccountConcurrency(account.id).then((currentConcurrency) => ({
+          account,
+          currentConcurrency
+        }))
+      )
+
+      const concurrencyResults = await Promise.all(concurrencyCheckPromises)
+
+      // 处理批量查询结果
+      for (const { account, currentConcurrency } of concurrencyResults) {
+        const isConcurrencyFull = currentConcurrency >= account.maxConcurrentTasks
+
+        if (!isConcurrencyFull) {
           availableAccounts.push({
             ...account,
             accountId: account.id,
@@ -576,20 +654,15 @@ class UnifiedClaudeScheduler {
             lastUsedAt: account.lastUsedAt || '0'
           })
           logger.info(
-            `✅ Added Claude Console account to available pool: ${account.name} (priority: ${account.priority})`
+            `✅ Added Claude Console account to available pool: ${account.name} (priority: ${account.priority}, concurrency: ${currentConcurrency}/${account.maxConcurrentTasks})`
           )
         } else {
-          if (isRateLimited) {
-            logger.warn(`⚠️ Claude Console account ${account.name} is rate limited`)
-          }
-          if (isQuotaExceeded) {
-            logger.warn(`💰 Claude Console account ${account.name} quota exceeded`)
-          }
+          // 🔢 因并发满额被排除，计数器加1
+          consoleAccountsExcludedByConcurrency++
+          logger.warn(
+            `⚠️ Claude Console account ${account.name} reached concurrency limit: ${currentConcurrency}/${account.maxConcurrentTasks}`
+          )
         }
-      } else {
-        logger.info(
-          `❌ Claude Console account ${account.name} not eligible - isActive: ${account.isActive}, status: ${account.status}, accountType: ${account.accountType}, schedulable: ${account.schedulable}`
-        )
       }
     }
 
@@ -692,6 +765,26 @@ class UnifiedClaudeScheduler {
     logger.info(
       `📊 Total available accounts: ${availableAccounts.length} (Claude: ${availableAccounts.filter((a) => a.accountType === 'claude-official').length}, Console: ${availableAccounts.filter((a) => a.accountType === 'claude-console').length}, Bedrock: ${availableAccounts.filter((a) => a.accountType === 'bedrock').length}, CCR: ${availableAccounts.filter((a) => a.accountType === 'ccr').length})`
     )
+
+    // 🚨 最终检查：只有在没有任何可用账户时，才根据Console并发排除情况抛出专用错误码
+    if (availableAccounts.length === 0) {
+      // 如果所有Console账户都因并发满额被排除，抛出专用错误码（503）
+      if (
+        consoleAccountsEligibleCount > 0 &&
+        consoleAccountsExcludedByConcurrency === consoleAccountsEligibleCount
+      ) {
+        logger.error(
+          `❌ All ${consoleAccountsEligibleCount} eligible Console accounts are at concurrency limit (no other account types available)`
+        )
+        const error = new Error(
+          'All available Claude Console accounts have reached their concurrency limit'
+        )
+        error.code = 'CONSOLE_ACCOUNT_CONCURRENCY_FULL'
+        throw error
+      }
+      // 否则走通用的"无可用账户"错误处理（由上层 selectAccountForApiKey 捕获）
+    }
+
     return availableAccounts
   }
 
@@ -820,6 +913,18 @@ class UnifiedClaudeScheduler {
         if (await claudeConsoleAccountService.isAccountOverloaded(accountId)) {
           return false
         }
+
+        // 检查并发限制（预检查，真正的原子抢占在 relayService 中进行）
+        if (account.maxConcurrentTasks > 0) {
+          const currentConcurrency = await redis.getConsoleAccountConcurrency(accountId)
+          if (currentConcurrency >= account.maxConcurrentTasks) {
+            logger.info(
+              `🚫 Claude Console account ${accountId} reached concurrency limit: ${currentConcurrency}/${account.maxConcurrentTasks} (pre-check)`
+            )
+            return false
+          }
+        }
+
         return true
       } else if (accountType === 'bedrock') {
         const accountResult = await bedrockAccountService.getAccount(accountId)
@@ -926,6 +1031,28 @@ class UnifiedClaudeScheduler {
   async _deleteSessionMapping(sessionHash) {
     const client = redis.getClientSafe()
     await client.del(`${this.SESSION_MAPPING_PREFIX}${sessionHash}`)
+  }
+
+  /**
+   * 🧹 公共方法：清理粘性会话映射（用于并发满额时的降级处理）
+   * @param {string} sessionHash - 会话哈希值
+   */
+  async clearSessionMapping(sessionHash) {
+    // 防御空会话哈希
+    if (!sessionHash || typeof sessionHash !== 'string') {
+      logger.debug('⚠️ Skipping session mapping clear - invalid sessionHash')
+      return
+    }
+
+    try {
+      await this._deleteSessionMapping(sessionHash)
+      logger.info(
+        `🧹 Cleared sticky session mapping for session: ${sessionHash.substring(0, 8)}...`
+      )
+    } catch (error) {
+      logger.error(`❌ Failed to clear session mapping for ${sessionHash}:`, error)
+      throw error
+    }
   }
 
   // 🔁 续期统一调度会话映射TTL（针对 unified_claude_session_mapping:* 键），遵循会话配置
@@ -1239,6 +1366,17 @@ class UnifiedClaudeScheduler {
             if (isOpusRateLimited) {
               logger.info(
                 `🚫 Skipping group member ${account.name} (${account.id}) due to active Opus limit`
+              )
+              continue
+            }
+          }
+
+          // 🔒 检查 Claude Console 账户的并发限制
+          if (accountType === 'claude-console' && account.maxConcurrentTasks > 0) {
+            const currentConcurrency = await redis.getConsoleAccountConcurrency(account.id)
+            if (currentConcurrency >= account.maxConcurrentTasks) {
+              logger.info(
+                `🚫 Skipping group member ${account.name} (${account.id}) due to concurrency limit: ${currentConcurrency}/${account.maxConcurrentTasks}`
               )
               continue
             }
