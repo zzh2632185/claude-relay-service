@@ -250,3 +250,8 @@ web/apiStats/
 # Admin SPA build files
 web/admin-spa/dist/
 node_modules
+AGENTS.md
+.roo/rules-architect/AGENTS.md
+.roo/rules-ask/AGENTS.md
+.roo/rules-code/AGENTS.md
+.roo/rules-debug/AGENTS.md
