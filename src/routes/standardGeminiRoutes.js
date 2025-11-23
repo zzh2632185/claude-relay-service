@@ -6,7 +6,6 @@ const geminiAccountService = require('../services/geminiAccountService')
 const unifiedGeminiScheduler = require('../services/unifiedGeminiScheduler')
 const apiKeyService = require('../services/apiKeyService')
 const sessionHelper = require('../utils/sessionHelper')
-const { parseSSELine } = require('../utils/sseParser')
 
 // 导入 geminiRoutes 中导出的处理函数
 const { handleLoadCodeAssist, handleOnboardUser, handleCountTokens } = require('./geminiRoutes')
@@ -135,6 +134,9 @@ async function normalizeAxiosStreamError(error) {
 
 // 专门处理标准 Gemini API 格式的 generateContent
 async function handleStandardGenerateContent(req, res) {
+  let account = null
+  let sessionHash = null
+
   try {
     if (!ensureGeminiPermission(req, res)) {
       return undefined
@@ -142,7 +144,7 @@ async function handleStandardGenerateContent(req, res) {
 
     // 从路径参数中获取模型名
     const model = req.params.modelName || 'gemini-2.0-flash-exp'
-    const sessionHash = sessionHelper.generateSessionHash(req.body)
+    sessionHash = sessionHelper.generateSessionHash(req.body)
 
     // 标准 Gemini API 请求体直接包含 contents 等字段
     const { contents, generationConfig, safetySettings, systemInstruction, tools, toolConfig } =
@@ -213,7 +215,7 @@ async function handleStandardGenerateContent(req, res) {
       sessionHash,
       model
     )
-    const account = await geminiAccountService.getAccount(accountId)
+    account = await geminiAccountService.getAccount(accountId)
     const { accessToken, refreshToken } = account
 
     const version = req.path.includes('v1beta') ? 'v1beta' : 'v1'
@@ -323,6 +325,17 @@ async function handleStandardGenerateContent(req, res) {
       responseData: error.response?.data,
       stack: error.stack
     })
+
+    // 处理速率限制
+    if (error.response?.status === 429) {
+      logger.warn(`⚠️ Gemini account ${account.id} rate limited (Standard API), marking as limited`)
+      try {
+        await unifiedGeminiScheduler.markAccountRateLimited(account.id, 'gemini', sessionHash)
+      } catch (limitError) {
+        logger.warn('Failed to mark account as rate limited in scheduler:', limitError)
+      }
+    }
+
     res.status(500).json({
       error: {
         message: error.message || 'Internal server error',
@@ -335,6 +348,8 @@ async function handleStandardGenerateContent(req, res) {
 // 专门处理标准 Gemini API 格式的 streamGenerateContent
 async function handleStandardStreamGenerateContent(req, res) {
   let abortController = null
+  let account = null
+  let sessionHash = null
 
   try {
     if (!ensureGeminiPermission(req, res)) {
@@ -343,7 +358,7 @@ async function handleStandardStreamGenerateContent(req, res) {
 
     // 从路径参数中获取模型名
     const model = req.params.modelName || 'gemini-2.0-flash-exp'
-    const sessionHash = sessionHelper.generateSessionHash(req.body)
+    sessionHash = sessionHelper.generateSessionHash(req.body)
 
     // 标准 Gemini API 请求体直接包含 contents 等字段
     const { contents, generationConfig, safetySettings, systemInstruction, tools, toolConfig } =
@@ -414,7 +429,7 @@ async function handleStandardStreamGenerateContent(req, res) {
       sessionHash,
       model
     )
-    const account = await geminiAccountService.getAccount(accountId)
+    account = await geminiAccountService.getAccount(accountId)
     const { accessToken, refreshToken } = account
 
     const version = req.path.includes('v1beta') ? 'v1beta' : 'v1'
@@ -511,7 +526,6 @@ async function handleStandardStreamGenerateContent(req, res) {
 
     // 处理流式响应并捕获usage数据
     // 方案 A++：透明转发 + 异步 usage 提取 + SSE 心跳机制
-    let streamBuffer = '' // 缓冲区用于处理不完整的行
     let totalUsage = {
       promptTokenCount: 0,
       candidatesTokenCount: 0,
@@ -533,65 +547,111 @@ async function handleStandardStreamGenerateContent(req, res) {
 
     heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL)
 
+    // 缓冲区：有些 chunk 内会包含多条 SSE 事件，需要拆分
+    let sseBuffer = ''
+
+    // 处理单个 SSE 事件块（不含结尾空行）
+    const handleEventBlock = (evt) => {
+      if (!evt.trim()) {
+        return
+      }
+
+      // 取出所有 data 行并拼接（兼容多行 data）
+      const dataLines = evt.split(/\r?\n/).filter((line) => line.startsWith('data:'))
+      if (dataLines.length === 0) {
+        // 非 data 事件，直接原样转发
+        if (!res.destroyed) {
+          res.write(`${evt}\n\n`)
+        }
+        return
+      }
+
+      const dataPayload = dataLines.map((line) => line.replace(/^data:\s?/, '')).join('\n')
+
+      let processedPayload = null
+      let parsed = null
+
+      if (dataPayload === '[DONE]') {
+        processedPayload = '[DONE]'
+      } else {
+        try {
+          parsed = JSON.parse(dataPayload)
+
+          // 捕获 usage（如果在顶层或 response 内都有可能）
+          if (parsed.usageMetadata) {
+            totalUsage = parsed.usageMetadata
+          } else if (parsed.response?.usageMetadata) {
+            totalUsage = parsed.response.usageMetadata
+          }
+
+          // 提取 response 并重新包装
+          processedPayload = JSON.stringify(parsed.response || parsed)
+        } catch (e) {
+          // 解析失败，直接转发原始 data
+        }
+      }
+
+      const outputChunk = processedPayload === null ? `${evt}\n\n` : `data: ${processedPayload}\n\n`
+
+      // 1️⃣ 立即转发处理后的数据
+      if (!res.destroyed) {
+        res.write(outputChunk)
+      }
+
+      // 2️⃣ 异步提取 usage 数据（兜底，防止上面解析失败未捕获）
+      setImmediate(() => {
+        try {
+          const usageSource =
+            processedPayload && processedPayload !== '[DONE]' ? processedPayload : dataPayload
+
+          if (!usageSource || !usageSource.includes('usageMetadata')) {
+            return
+          }
+
+          // 再尝试一次解析
+          const usageObj = JSON.parse(usageSource)
+          const usage = usageObj.usageMetadata || usageObj.response?.usageMetadata || usageObj.usage
+
+          if (usage && typeof usage === 'object') {
+            totalUsage = usage
+            logger.debug('📊 Captured Gemini usage data (async):', totalUsage)
+          }
+        } catch (error) {
+          // 提取用量失败时忽略
+        }
+      })
+    }
+
     streamResponse.on('data', (chunk) => {
       try {
         // 更新最后数据时间
         lastDataTime = Date.now()
 
-        // 1️⃣ 立即转发原始数据（零延迟，最高优先级）
-        if (!res.destroyed) {
-          res.write(chunk) // 直接转发 Buffer，无需转换和序列化
+        // 追加到缓冲区后按双换行拆分事件
+        sseBuffer += chunk.toString()
+        const events = sseBuffer.split(/\r?\n\r?\n/)
+        sseBuffer = events.pop() || ''
+
+        for (const evt of events) {
+          handleEventBlock(evt)
         }
-
-        // 2️⃣ 异步提取 usage 数据（不阻塞转发）
-        // 使用 setImmediate 将解析放到下一个事件循环
-        setImmediate(() => {
-          try {
-            const chunkStr = chunk.toString()
-            if (!chunkStr.trim()) {
-              return
-            }
-
-            // 快速检查是否包含 usage 数据（避免不必要的解析）
-            if (!chunkStr.includes('usageMetadata')) {
-              return
-            }
-
-            // 处理不完整的行
-            streamBuffer += chunkStr
-            const lines = streamBuffer.split('\n')
-            streamBuffer = lines.pop() || ''
-
-            // 仅解析包含 usage 的行
-            for (const line of lines) {
-              if (!line.trim() || !line.includes('usageMetadata')) {
-                continue
-              }
-
-              try {
-                const parsed = parseSSELine(line)
-                if (parsed.type === 'data' && parsed.data.response?.usageMetadata) {
-                  totalUsage = parsed.data.response.usageMetadata
-                  logger.debug('📊 Captured Gemini usage data:', totalUsage)
-                }
-              } catch (parseError) {
-                // 解析失败但不影响转发
-                logger.warn('⚠️ Failed to parse usage line:', parseError.message)
-              }
-            }
-          } catch (error) {
-            // 提取失败但不影响转发
-            logger.warn('⚠️ Error extracting usage data:', error.message)
-          }
-        })
       } catch (error) {
         logger.error('Error processing stream chunk:', error)
-        // 不中断流，继续处理后续数据
       }
     })
 
     streamResponse.on('end', () => {
       logger.info('Stream completed successfully')
+
+      // 处理可能残留在缓冲区的事件（上游未以空行结尾的情况）
+      if (sseBuffer.trim()) {
+        try {
+          handleEventBlock(sseBuffer)
+        } catch (flushError) {
+          // 忽略 flush 期间的异常
+        }
+        sseBuffer = ''
+      }
 
       // 清理心跳定时器
       if (heartbeatTimer) {
@@ -681,6 +741,18 @@ async function handleStandardStreamGenerateContent(req, res) {
       responseData: normalizedError.parsedBody || normalizedError.rawBody,
       stack: error.stack
     })
+
+    // 处理速率限制
+    if (error.response?.status === 429) {
+      logger.warn(
+        `⚠️ Gemini account ${account.id} rate limited (Standard Stream API), marking as limited`
+      )
+      try {
+        await unifiedGeminiScheduler.markAccountRateLimited(account.id, 'gemini', sessionHash)
+      } catch (limitError) {
+        logger.warn('Failed to mark account as rate limited in scheduler:', limitError)
+      }
+    }
 
     if (!res.headersSent) {
       const statusCode = normalizedError.status || 500
