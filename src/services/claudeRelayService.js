@@ -13,6 +13,7 @@ const redis = require('../models/redis')
 const ClaudeCodeValidator = require('../validators/clients/claudeCodeValidator')
 const { formatDateWithTimezone } = require('../utils/dateHelper')
 const requestIdentityService = require('./requestIdentityService')
+const { createClaudeTestPayload } = require('../utils/testPayloadHelper')
 
 class ClaudeRelayService {
   constructor() {
@@ -789,7 +790,8 @@ class ClaudeRelayService {
       return total
     }
 
-    const removeFromMessages = () => {
+    // 只移除 cache_control 属性，保留内容本身，避免丢失用户消息
+    const removeCacheControlFromMessages = () => {
       if (!Array.isArray(body.messages)) {
         return false
       }
@@ -803,12 +805,8 @@ class ClaudeRelayService {
         for (let contentIndex = 0; contentIndex < message.content.length; contentIndex += 1) {
           const contentItem = message.content[contentIndex]
           if (contentItem && contentItem.cache_control) {
-            message.content.splice(contentIndex, 1)
-
-            if (message.content.length === 0) {
-              body.messages.splice(messageIndex, 1)
-            }
-
+            // 只删除 cache_control 属性，保留内容
+            delete contentItem.cache_control
             return true
           }
         }
@@ -817,7 +815,8 @@ class ClaudeRelayService {
       return false
     }
 
-    const removeFromSystem = () => {
+    // 只移除 cache_control 属性，保留 system 内容
+    const removeCacheControlFromSystem = () => {
       if (!Array.isArray(body.system)) {
         return false
       }
@@ -825,12 +824,8 @@ class ClaudeRelayService {
       for (let index = 0; index < body.system.length; index += 1) {
         const systemItem = body.system[index]
         if (systemItem && systemItem.cache_control) {
-          body.system.splice(index, 1)
-
-          if (body.system.length === 0) {
-            delete body.system
-          }
-
+          // 只删除 cache_control 属性，保留内容
+          delete systemItem.cache_control
           return true
         }
       }
@@ -841,12 +836,13 @@ class ClaudeRelayService {
     let total = countCacheControlBlocks()
 
     while (total > MAX_CACHE_CONTROL_BLOCKS) {
-      if (removeFromMessages()) {
+      // 优先从 messages 中移除 cache_control，再从 system 中移除
+      if (removeCacheControlFromMessages()) {
         total -= 1
         continue
       }
 
-      if (removeFromSystem()) {
+      if (removeCacheControlFromSystem()) {
         total -= 1
         continue
       }
@@ -2249,26 +2245,7 @@ class ClaudeRelayService {
 
   // 🧪 测试账号连接（供Admin API使用，直接复用 _makeClaudeStreamRequestWithUsageCapture）
   async testAccountConnection(accountId, responseStream) {
-    const testRequestBody = {
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 100,
-      stream: true,
-      system: [
-        {
-          type: 'text',
-          text: this.claudeCodeSystemPrompt,
-          cache_control: {
-            type: 'ephemeral'
-          }
-        }
-      ],
-      messages: [
-        {
-          role: 'user',
-          content: 'hi'
-        }
-      ]
-    }
+    const testRequestBody = createClaudeTestPayload('claude-sonnet-4-5-20250929', { stream: true })
 
     try {
       // 获取账户信息
